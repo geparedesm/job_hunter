@@ -21,33 +21,42 @@ class AdzunaCollector(BaseCollector):
             return []
 
         jobs: list[CollectedJob] = []
+        seen_keys: set[str] = set()
+        search_locations = self.config.locations or ["Australia"]
         with httpx.Client(timeout=20.0) as client:
             for keyword in self.config.keywords:
-                params = {
-                    "app_id": app_id,
-                    "app_key": app_key,
-                    "results_per_page": 10,
-                    "what": keyword,
-                    "where": ",".join(self.config.locations) if self.config.locations else "Australia",
-                    "content-type": "application/json",
-                }
-                response = client.get("https://api.adzuna.com/v1/api/jobs/au/search/1", params=params)
-                response.raise_for_status()
-                data = response.json()
-                for item in data.get("results", []):
-                    jobs.append(
-                        CollectedJob(
-                            source=self.source_name,
-                            external_id=str(item.get("id")),
-                            title=item.get("title", ""),
-                            company=(item.get("company") or {}).get("display_name", "Unknown"),
-                            description=item.get("description", ""),
-                            location=(item.get("location") or {}).get("display_name"),
-                            salary=_format_salary(item.get("salary_min"), item.get("salary_max")),
-                            url=item.get("redirect_url", ""),
-                            raw_payload=item,
+                for location in search_locations:
+                    params = {
+                        "app_id": app_id,
+                        "app_key": app_key,
+                        "results_per_page": 10,
+                        "what": keyword,
+                        "where": location,
+                        "content-type": "application/json",
+                    }
+                    response = client.get("https://api.adzuna.com/v1/api/jobs/au/search/1", params=params)
+                    response.raise_for_status()
+                    data = response.json()
+                    for item in data.get("results", []):
+                        external_id = str(item.get("id"))
+                        url = item.get("redirect_url", "")
+                        dedupe_key = external_id or url
+                        if dedupe_key in seen_keys:
+                            continue
+                        seen_keys.add(dedupe_key)
+                        jobs.append(
+                            CollectedJob(
+                                source=self.source_name,
+                                external_id=external_id,
+                                title=item.get("title", ""),
+                                company=(item.get("company") or {}).get("display_name", "Unknown"),
+                                description=item.get("description", ""),
+                                location=(item.get("location") or {}).get("display_name"),
+                                salary=_format_salary(item.get("salary_min"), item.get("salary_max")),
+                                url=url,
+                                raw_payload=item,
+                            )
                         )
-                    )
         return jobs
 
 

@@ -184,6 +184,12 @@ class JobHunterService:
             for collector in self._collectors():
                 try:
                     collected_jobs = collector.search()
+                    self._log(
+                        session,
+                        "info",
+                        "collector_results",
+                        f"{collector.source_name}: {len(collected_jobs)} jobs discovered",
+                    )
                 except Exception as exc:
                     self._log(session, "error", "collector_failure", f"{collector.source_name}: {exc}")
                     continue
