@@ -1,0 +1,117 @@
+"""FastAPI application for the personal AI job hunter."""
+
+from __future__ import annotations
+
+from fastapi import FastAPI, HTTPException
+
+from backend.schemas import ActionResponse, JobRead, SearchResponse, StatisticsRead
+from backend.services import JobHunterService
+
+app = FastAPI(title="Personal AI Job Hunter", version="0.1.0")
+service = JobHunterService()
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Simple health check."""
+    return {"status": "ok"}
+
+
+@app.get("/jobs", response_model=list[JobRead])
+def list_jobs(
+    keyword: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    minimum_match_score: float | None = None,
+) -> list[JobRead]:
+    """List stored jobs."""
+    return [JobRead.model_validate(job) for job in service.list_jobs(keyword, source, status, minimum_match_score)]
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: int) -> dict[str, object]:
+    """Fetch job details with latest generated documents."""
+    try:
+        details = service.get_job_details(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "job": JobRead.model_validate(details["job"]).model_dump(),
+        "generated_cv": details["generated_cv"],
+        "generated_cover_letter": details["generated_cover_letter"],
+    }
+
+
+@app.post("/search", response_model=SearchResponse)
+def search_now() -> SearchResponse:
+    """Run an immediate search cycle."""
+    return SearchResponse(**service.search_now())
+
+
+@app.post("/jobs/{job_id}/generate", response_model=ActionResponse)
+def generate_documents(job_id: int) -> ActionResponse:
+    """Generate tailored documents for a job."""
+    try:
+        payload = service.generate_documents(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Documents generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/approve", response_model=ActionResponse)
+def approve_job(job_id: int) -> ActionResponse:
+    """Approve a job for later application automation."""
+    try:
+        job = service.approve_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Job approved", payload={"job_id": job.id, "status": job.status})
+
+
+@app.post("/jobs/{job_id}/reject", response_model=ActionResponse)
+def reject_job(job_id: int) -> ActionResponse:
+    """Reject a job."""
+    try:
+        job = service.reject_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Job rejected", payload={"job_id": job.id, "status": job.status})
+
+
+@app.post("/jobs/{job_id}/skip", response_model=ActionResponse)
+def skip_job(job_id: int) -> ActionResponse:
+    """Skip a job."""
+    try:
+        job = service.skip_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Job skipped", payload={"job_id": job.id, "status": job.status})
+
+
+@app.post("/jobs/{job_id}/apply", response_model=ActionResponse)
+def apply_to_job(job_id: int) -> ActionResponse:
+    """Run application automation after approval."""
+    try:
+        result = service.apply_to_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message=result.message, payload={"status": result.status})
+
+
+@app.get("/approvals", response_model=list[JobRead])
+def pending_approvals() -> list[JobRead]:
+    """List pending approvals."""
+    return [JobRead.model_validate(job) for job in service.get_pending_approvals()]
+
+
+@app.get("/statistics", response_model=StatisticsRead)
+def statistics() -> StatisticsRead:
+    """Return dashboard statistics."""
+    return StatisticsRead(**service.get_statistics())
+
+
+@app.get("/export", response_model=ActionResponse)
+def export_csv() -> ActionResponse:
+    """Export applications to CSV."""
+    path = service.export_applications_csv()
+    return ActionResponse(success=True, message="Applications exported", payload={"path": str(path)})
