@@ -59,3 +59,5 @@ data/job_hunter.db
 .pyc
 data/job_hunter.db
 logs/job_hunter.log
+data/job_hunter.db
+logs/job_hunter.log
