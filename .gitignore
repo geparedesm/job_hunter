@@ -56,3 +56,6 @@ data/job_hunter.db
 .DS_Store
 .idea/
 .vscode/
+.pyc
+data/job_hunter.db
+logs/job_hunter.log
