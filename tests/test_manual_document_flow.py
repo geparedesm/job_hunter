@@ -327,6 +327,7 @@ def test_cv_preview_endpoints_and_pdf_exports(isolated_env, monkeypatch):
 
     base_response = client.get("/cv/base")
     job_response = client.get(f"/jobs/{job.id}/cv")
+    diff_response = client.get(f"/jobs/{job.id}/cv/diff")
     base_pdf_response = client.get(f"/cv/base/pdf?job_id={job.id}")
     tailored_pdf_response = client.get(f"/jobs/{job.id}/cv/pdf")
 
@@ -334,11 +335,14 @@ def test_cv_preview_endpoints_and_pdf_exports(isolated_env, monkeypatch):
     assert "# Base CV" in base_response.json()["content"]
     assert job_response.status_code == 200
     assert "Tailored CV" in job_response.json()["tailored_cv_content"]
+    assert diff_response.status_code == 200
+    assert any(line.startswith("+") or line.startswith("-") for line in diff_response.json()["diff_lines"])
     assert base_pdf_response.status_code == 200
     assert base_pdf_response.headers["content-type"] == "application/pdf"
     assert base_pdf_response.content.startswith(b"%PDF")
     assert tailored_pdf_response.status_code == 200
     assert tailored_pdf_response.content.startswith(b"%PDF")
+    assert 'filename="tailored_cv_' in tailored_pdf_response.headers["content-disposition"]
 
 
 def test_job_cv_pdf_endpoint_requires_existing_tailored_cv(isolated_env):

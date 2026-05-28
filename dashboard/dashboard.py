@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from dashboard.components import (
     build_jobs_dataframe,
     render_application_history,
+    render_cv_diff,
     render_file_preview_if_exists,
     render_hero,
     render_jobs_table,
@@ -32,6 +33,7 @@ from dashboard.services import (
     export_base_cv_pdf,
     export_job_cv_pdf,
     get_application_history_data,
+    get_cv_diff_data,
     get_cv_jobs_data,
     get_cv_preview_data,
     get_job_detail_data,
@@ -94,6 +96,7 @@ def _init_dashboard_state() -> None:
         "jobs_required_skills_only": False,
         "jobs_date_range": (date.today() - timedelta(days=30), date.today()),
         "job_detail_tab": "Overview",
+        "job_detail_cv_view": "Side-by-side Preview",
         "cv_page_selected_job": None,
     }
     for key, value in defaults.items():
@@ -420,17 +423,100 @@ elif page == "🔍 Jobs":
                 if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(detail["id"])) is not None:
                     _refresh_task_monitor()
                     st.rerun()
-            if detail["generated_cv_path"]:
-                st.write(f"Stored file: `{detail['generated_cv_path']}`")
-                st.download_button(
-                    "Download Tailored CV",
-                    data=detail["generated_cv"].encode("utf-8"),
-                    file_name=Path(detail["generated_cv_path"]).name,
-                    use_container_width=False,
-                    key=f"detail_download_generated_cv_{detail['id']}",
+            cv_view = st.radio(
+                "CV View",
+                ["Side-by-side Preview", "CV Diff"],
+                horizontal=True,
+                key="job_detail_cv_view",
+            )
+            base_pdf_state_key = f"job_detail_base_cv_pdf_payload_{detail['id']}"
+            tailored_pdf_state_key = f"job_detail_tailored_cv_pdf_payload_{detail['id']}"
+            pdf_c1, pdf_c2 = st.columns(2)
+            if pdf_c1.button("Prepare Original CV PDF", key=f"detail_prepare_base_cv_pdf_{detail['id']}", use_container_width=True):
+                exported = run_action("Original CV PDF exported", lambda: export_base_cv_pdf(detail["id"]))
+                if isinstance(exported, dict):
+                    st.session_state[base_pdf_state_key] = exported
+            base_pdf_payload = st.session_state.get(base_pdf_state_key)
+            if isinstance(base_pdf_payload, dict):
+                pdf_c1.download_button(
+                    "Download Original CV PDF",
+                    data=base_pdf_payload["bytes"],
+                    file_name=Path(base_pdf_payload["path"]).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"detail_download_base_cv_pdf_{detail['id']}",
                 )
-                with st.expander("Preview tailored CV", expanded=False):
-                    st.code(detail["generated_cv"], language="markdown")
+
+            if detail["generated_cv"].strip():
+                if pdf_c2.button("Prepare Tailored CV PDF", key=f"detail_prepare_tailored_cv_pdf_{detail['id']}", use_container_width=True):
+                    exported = run_action("Tailored CV PDF exported", lambda: export_job_cv_pdf(detail["id"]))
+                    if isinstance(exported, dict):
+                        st.session_state[tailored_pdf_state_key] = exported
+                tailored_pdf_payload = st.session_state.get(tailored_pdf_state_key)
+                if isinstance(tailored_pdf_payload, dict):
+                    pdf_c2.download_button(
+                        "Download CV",
+                        data=tailored_pdf_payload["bytes"],
+                        file_name=Path(tailored_pdf_payload["path"]).name,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"detail_download_tailored_cv_pdf_{detail['id']}",
+                    )
+                st.caption(f"Tailored CV file: `{detail['generated_cv_path']}`")
+                markdown_c1, markdown_c2 = st.columns(2)
+                markdown_c1.download_button(
+                    "Download Original CV Markdown",
+                    data=manual_cv_editor.encode("utf-8"),
+                    file_name=f"original_cv_{detail['id']}.md",
+                    use_container_width=True,
+                    key=f"detail_download_original_cv_md_{detail['id']}",
+                )
+                markdown_c2.download_button(
+                    "Download Tailored CV Markdown",
+                    data=detail["generated_cv"].encode("utf-8"),
+                    file_name=f"tailored_cv_{detail['id']}_{detail['company']}_{detail['role']}.md".replace(" ", "_"),
+                    use_container_width=True,
+                    key=f"detail_download_tailored_cv_md_{detail['id']}",
+                )
+            else:
+                pdf_c2.button("Download CV", key=f"detail_download_tailored_cv_pdf_disabled_{detail['id']}", use_container_width=True, disabled=True)
+
+            if cv_view == "Side-by-side Preview":
+                preview_c1, preview_c2 = st.columns(2)
+                with preview_c1:
+                    st.markdown("### Original CV")
+                    st.code(manual_cv_editor or "Original CV is empty.", language="markdown")
+                with preview_c2:
+                    st.markdown("### Tailored CV")
+                    if detail["generated_cv"].strip():
+                        st.code(detail["generated_cv"], language="markdown")
+                    else:
+                        st.info("No tailored CV has been generated for this job yet.")
+                        if st.button(
+                            "Generate Tailored CV",
+                            key=f"detail_generate_cv_inline_{detail['id']}",
+                            use_container_width=True,
+                            disabled=is_task_running("tailored_cv_generation", job_id=detail["id"]),
+                        ):
+                            if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(detail["id"])) is not None:
+                                _refresh_task_monitor()
+                                st.rerun()
+            else:
+                st.markdown("### CV Diff")
+                if detail["generated_cv"].strip():
+                    diff_data = get_cv_diff_data(detail["id"])
+                    render_cv_diff(diff_data["diff_lines"])
+                else:
+                    st.info("No tailored CV has been generated for this job yet.")
+                    if st.button(
+                        "Generate Tailored CV",
+                        key=f"detail_generate_cv_diff_{detail['id']}",
+                        use_container_width=True,
+                        disabled=is_task_running("tailored_cv_generation", job_id=detail["id"]),
+                    ):
+                        if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(detail["id"])) is not None:
+                            _refresh_task_monitor()
+                            st.rerun()
 
         if detail_tab == "Cover Letter":
             st.info("Cover letters are generated only when you press the button below.")

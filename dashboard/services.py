@@ -303,6 +303,12 @@ def get_cv_preview_data(job_id: int) -> dict[str, Any]:
 
 
 @st.cache_data(ttl=60)
+def get_cv_diff_data(job_id: int) -> dict[str, Any]:
+    """Load Git-style CV diff data for a selected job."""
+    return get_job_service().get_job_cv_diff(job_id)
+
+
+@st.cache_data(ttl=60)
 def get_statistics_data() -> dict[str, Any]:
     """Load dashboard statistics with additional derived datasets."""
     overview = get_overview_data()

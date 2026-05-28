@@ -97,6 +97,15 @@ def get_job_cv(job_id: int) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/jobs/{job_id}/cv/diff")
+def get_job_cv_diff(job_id: int) -> dict[str, object]:
+    """Return a Git-style diff between base and tailored CV."""
+    try:
+        return service.get_job_cv_diff(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/cv/base/pdf")
 def get_base_cv_pdf(job_id: int | None = None) -> FileResponse:
     """Export the base CV PDF on demand."""

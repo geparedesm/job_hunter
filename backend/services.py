@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import difflib
 import logging
 import os
 import re
@@ -213,7 +214,13 @@ class JobHunterService:
     def _safe_cv_pdf_name(self, label: str, job: Job | None = None) -> str:
         if job is None:
             return f"{_slugify(label)}.pdf"
-        return f"job_{job.id}_{_slugify(job.company)}_{_slugify(job.title)}_{_slugify(label)}.pdf"
+        company_slug = _slugify(job.company)
+        title_slug = _slugify(job.title)
+        if label == "tailored_cv":
+            return f"tailored_cv_{job.id}_{company_slug}_{title_slug}.pdf"
+        if label == "base_cv":
+            return f"base_cv_{job.id}_{company_slug}_{title_slug}.pdf"
+        return f"{_slugify(label)}_{job.id}_{company_slug}_{title_slug}.pdf"
 
     def _next_document_version(self, session: Session, job_id: int, doc_type: str) -> int:
         versions = session.scalars(
@@ -284,6 +291,26 @@ class JobHunterService:
             }
         finally:
             session.close()
+
+    def get_job_cv_diff(self, job_id: int) -> dict[str, Any]:
+        """Return Git-style diff data between the base and tailored CV."""
+        cv_data = self.get_job_cv(job_id)
+        base_lines = cv_data["base_cv_content"].splitlines()
+        tailored_lines = cv_data["tailored_cv_content"].splitlines()
+        unified = list(
+            difflib.unified_diff(
+                base_lines,
+                tailored_lines,
+                fromfile="original_cv.md",
+                tofile="tailored_cv.md",
+                lineterm="",
+            )
+        )
+        return {
+            **cv_data,
+            "diff_lines": unified,
+            "has_tailored_cv": bool(cv_data["tailored_cv_content"].strip()),
+        }
 
     def export_base_cv_pdf(self, job_id: int | None = None, task_id: str | None = None) -> Path:
         """Export the base CV to PDF only when explicitly requested."""

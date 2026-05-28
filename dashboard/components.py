@@ -276,6 +276,36 @@ def render_task_monitor(task_data: dict[str, Any]) -> None:
             )
 
 
+def render_cv_diff(diff_lines: list[str]) -> None:
+    """Render a Git-style CV diff."""
+    if not diff_lines:
+        st.info("No CV differences are available yet.")
+        return
+    for line in diff_lines:
+        if line.startswith("---") or line.startswith("+++"):
+            st.caption(line)
+            continue
+        if line.startswith("@@"):
+            st.code(line, language="diff")
+            continue
+        if line.startswith("+"):
+            st.markdown(
+                f"<div style='padding:4px 8px; background:#052e16; color:#bbf7d0; border-left:4px solid #22c55e; font-family:monospace'>{line}</div>",
+                unsafe_allow_html=True,
+            )
+            continue
+        if line.startswith("-"):
+            st.markdown(
+                f"<div style='padding:4px 8px; background:#3f0d12; color:#fecaca; border-left:4px solid #ef4444; font-family:monospace'>{line}</div>",
+                unsafe_allow_html=True,
+            )
+            continue
+        st.markdown(
+            f"<div style='padding:4px 8px; background:#111827; color:#d1d5db; border-left:4px solid #6b7280; font-family:monospace'>{line or '&nbsp;'}</div>",
+            unsafe_allow_html=True,
+        )
+
+
 def render_file_preview_if_exists(path_str: str, label: str) -> None:
     """Show an image preview if a screenshot exists."""
     if not path_str:
