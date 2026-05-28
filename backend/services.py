@@ -6,6 +6,7 @@ import csv
 import logging
 import os
 import re
+import traceback
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from automation.apply import ApplicationAutomation, ApplicationAutomationResult
 from backend.database import SessionLocal, init_db
 from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
 from backend.pdf_utils import markdown_to_plain_text, write_simple_pdf
+from backend.task_manager import TaskManager
 from collectors.adzuna import AdzunaCollector
 from collectors.base import CollectedJob
 from collectors.content_extractor import JobContentExtractor
@@ -75,6 +77,7 @@ class JobHunterService:
         self.notifier = ConsoleNotifier()
         self.automation = ApplicationAutomation()
         self.content_extractor = JobContentExtractor()
+        self.task_manager = TaskManager()
 
     def _session(self, session: Session | None = None) -> Session:
         return session or SessionLocal()
@@ -108,19 +111,44 @@ class JobHunterService:
             raise ValueError("A base CV is required before generating tailored documents.")
         return content
 
-    def _log(self, session: Session, level: str, event_type: str, message: str, metadata: dict[str, Any] | None = None) -> None:
+    def _log(
+        self,
+        session: Session,
+        level: str,
+        event_type: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+        task_id: str | None = None,
+    ) -> None:
         LOGGER.log(getattr(logging, level.upper(), logging.INFO), "%s | %s", event_type, message)
-        session.add(JobLog(level=level.upper(), event_type=event_type, message=message, metadata_json=metadata))
+        session.add(JobLog(level=level.upper(), event_type=event_type, task_id=task_id, message=message, metadata_json=metadata))
         session.commit()
 
     def _history(self, session: Session, job_id: int, action: str, details: str | None = None) -> None:
         session.add(ApplicationHistory(job_id=job_id, action=action, details=details))
         session.commit()
 
-    def _notify(self, session: Session, event_type: str, message: str, job_id: int | None = None) -> None:
+    def _notify(self, session: Session, event_type: str, message: str, job_id: int | None = None, task_id: str | None = None) -> None:
         self.notifier.send(message)
         session.add(Notification(job_id=job_id, channel="console", event_type=event_type, message=message))
         session.commit()
+        if task_id:
+            self._log(session, "info", "notification_sent", message.splitlines()[0], {"job_id": job_id, "event_type": event_type}, task_id=task_id)
+
+    def _ensure_task(
+        self,
+        task_id: str | None,
+        *,
+        task_name: str,
+        task_type: str,
+        context: dict[str, Any] | None = None,
+        start_step: str = "Starting",
+    ) -> str:
+        if task_id is None:
+            created = self.task_manager.create_task(task_name, task_type, current_step=start_step, context=context)
+            task_id = str(created["task_id"])
+        self.task_manager.update_task_progress(task_id, progress_percentage=1, current_step=start_step, status="running")
+        return task_id
 
     def _job_exists(self, session: Session, collected_job: CollectedJob) -> Job | None:
         if collected_job.external_id:
@@ -257,22 +285,41 @@ class JobHunterService:
         finally:
             session.close()
 
-    def export_base_cv_pdf(self, job_id: int | None = None) -> Path:
+    def export_base_cv_pdf(self, job_id: int | None = None, task_id: str | None = None) -> Path:
         """Export the base CV to PDF only when explicitly requested."""
         session = self._session()
         try:
             content = self._base_cv_content(session)
             job = session.get(Job, job_id) if job_id is not None else None
+            task_id = self._ensure_task(
+                task_id,
+                task_name="Export base CV PDF" if job is None else f"Export base CV PDF for {job.company} - {job.title}",
+                task_type="pdf_export",
+                context={"job_id": job.id} if job is not None else {"base_cv": True},
+                start_step="Preparing base CV PDF",
+            )
             filename = self._safe_cv_pdf_name("base_cv", job)
-            return write_simple_pdf(
+            self.task_manager.update_task_progress(task_id, progress_percentage=60, current_step="Rendering PDF...")
+            path = write_simple_pdf(
                 markdown_to_plain_text(content),
                 self._pdf_output_dir() / filename,
                 title="Base CV",
             )
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return path
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="PDF export failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             session.close()
 
-    def export_job_cv_pdf(self, job_id: int) -> Path:
+    def export_job_cv_pdf(self, job_id: int, task_id: str | None = None) -> Path:
         """Export a tailored CV to PDF only when explicitly requested."""
         cv_data = self.get_job_cv(job_id)
         content = cv_data["tailored_cv_content"]
@@ -283,11 +330,30 @@ class JobHunterService:
             job = session.get(Job, job_id)
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
-            return write_simple_pdf(
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Export tailored CV PDF for {job.company} - {job.title}",
+                task_type="pdf_export",
+                context={"job_id": job.id, "tailored": True},
+                start_step="Preparing tailored CV PDF",
+            )
+            self.task_manager.update_task_progress(task_id, progress_percentage=60, current_step="Rendering PDF...")
+            path = write_simple_pdf(
                 markdown_to_plain_text(content),
                 self._pdf_output_dir() / self._safe_cv_pdf_name("tailored_cv", job),
                 title=f"Tailored CV - {job.company} - {job.title}",
             )
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return path
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="PDF export failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             session.close()
 
@@ -305,13 +371,23 @@ class JobHunterService:
             return False, "already applied"
         return True, None
 
-    def search_jobs(self) -> SearchSummary:
+    def search_jobs(self, task_id: str | None = None) -> SearchSummary:
         """Run collectors, analyze new jobs, and generate pending approvals."""
+        task_id = self._ensure_task(
+            task_id,
+            task_name="Job search scheduler",
+            task_type="job_search_scheduler",
+            context={"source_count": len(self._collectors())},
+            start_step="Preparing collectors",
+        )
         session = self._session()
         should_close = session is not None
         try:
             summary = SearchSummary()
-            for collector in self._collectors():
+            collectors = self._collectors()
+            total_collectors = max(1, len(collectors))
+            self.task_manager.update_task_progress(task_id, progress_percentage=5, current_step="Searching jobs...")
+            for collector_index, collector in enumerate(collectors, start=1):
                 try:
                     collected_jobs = collector.search()
                     self._log(
@@ -319,16 +395,23 @@ class JobHunterService:
                         "info",
                         "collector_results",
                         f"{collector.source_name}: {len(collected_jobs)} jobs discovered",
+                        task_id=task_id,
                     )
                 except Exception as exc:
-                    self._log(session, "error", "collector_failure", f"{collector.source_name}: {exc}")
+                    self._log(session, "error", "collector_failure", f"{collector.source_name}: {exc}", task_id=task_id)
                     continue
 
                 summary.discovered += len(collected_jobs)
-                for collected_job in collected_jobs:
+                self.task_manager.update_task_progress(
+                    task_id,
+                    progress_percentage=min(30, 5 + int((collector_index / total_collectors) * 25)),
+                    current_step=f"Found {summary.discovered} jobs",
+                )
+                total_jobs = max(1, len(collected_jobs))
+                for job_index, collected_job in enumerate(collected_jobs, start=1):
                     blacklisted, reason = self._is_blacklisted(collected_job)
                     if blacklisted:
-                        self._log(session, "info", "job_rejected", f"{collected_job.company} {collected_job.title}", {"reason": reason})
+                        self._log(session, "info", "job_rejected", f"{collected_job.company} {collected_job.title}", {"reason": reason}, task_id=task_id)
                         summary.skipped += 1
                         continue
 
@@ -339,88 +422,146 @@ class JobHunterService:
 
                     job = self._persist_job(session, collected_job)
                     summary.created += 1
-                    match_result = self._analyze_job(session, job)
+                    self.task_manager.update_task_progress(
+                        task_id,
+                        progress_percentage=min(85, 30 + int((job_index / total_jobs) * 50)),
+                        current_step=f"Analyzing jobs... {job.company} / {job.title}",
+                    )
+                    match_result = self._analyze_job(session, job, parent_task_id=task_id)
                     summary.analyzed += 1
                     allowed, filter_reason = self._apply_filters(session, job, match_result)
                     if not allowed:
                         job.status = "skipped"
                         session.commit()
                         self._history(session, job.id, "skipped", filter_reason)
-                        self._log(session, "info", "job_skipped", f"{job.company} {job.title}", {"reason": filter_reason})
+                        self._log(session, "info", "job_skipped", f"{job.company} {job.title}", {"reason": filter_reason}, task_id=task_id)
                         summary.skipped += 1
                         continue
 
                     job.status = "pending_approval"
                     session.commit()
                     self._history(session, job.id, "pending_approval", "Analysis completed; manual CV required")
-                    self._notify(session, "pending_approval", self.notifier.notify_pending_approval(job), job.id)
+                    self._notify(session, "pending_approval", self.notifier.notify_pending_approval(job), job.id, task_id=task_id)
                     summary.pending_approval += 1
+            self.task_manager.update_task_progress(task_id, progress_percentage=95, current_step="Saving results...")
+            self.task_manager.complete_task(task_id, current_step="Completed")
             return summary
+        except Exception as exc:
+            self.task_manager.fail_task(
+                task_id,
+                error_message=str(exc),
+                current_step="Job search failed",
+                traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+            )
+            raise
         finally:
             if should_close:
                 session.close()
 
-    def _analyze_job(self, session: Session, job: Job) -> MatchResult:
-        manual_cv = self._base_cv_content(session)
-        extraction_result = self.content_extractor.extract(job.url, job.description)
-        preview_description = (job.raw_payload or {}).get("preview_description", job.description)
-        if extraction_result.full_text:
-            job.description = extraction_result.full_text
-        raw_payload = dict(job.raw_payload or {})
-        raw_payload["content_extraction"] = {
-            "source_method": extraction_result.source_method,
-            "warnings": extraction_result.warnings,
-            "is_complete": extraction_result.is_complete,
-            "sections": extraction_result.sections,
-            "preview_description": preview_description,
-        }
-
-        match_result = self.matcher.analyze_job(
-            job,
-            manual_cv,
-            extracted_sections=extraction_result.sections,
-            extraction_warnings=extraction_result.warnings,
+    def _analyze_job(self, session: Session, job: Job, parent_task_id: str | None = None, task_id: str | None = None) -> MatchResult:
+        context = {"job_id": job.id, "source": job.source, "parent_task_id": parent_task_id}
+        task_id = self._ensure_task(
+            task_id,
+            task_name=f"Analyze job {job.company} - {job.title}",
+            task_type="job_analysis",
+            context=context,
+            start_step="Loading base CV",
         )
+        manual_cv = self._base_cv_content(session)
+        try:
+            self.task_manager.update_task_progress(task_id, progress_percentage=10, current_step="Extracting job content")
+            extraction_result = self.content_extractor.extract(job.url, job.description)
+            preview_description = (job.raw_payload or {}).get("preview_description", job.description)
+            if extraction_result.full_text:
+                job.description = extraction_result.full_text
+            raw_payload = dict(job.raw_payload or {})
+            raw_payload["content_extraction"] = {
+                "source_method": extraction_result.source_method,
+                "warnings": extraction_result.warnings,
+                "is_complete": extraction_result.is_complete,
+                "sections": extraction_result.sections,
+                "preview_description": preview_description,
+            }
 
-        raw_payload["analysis"] = {
-            "required_skill_items": match_result.required_skill_items,
-            "preferred_skill_items": match_result.preferred_skill_items,
-            "qualification_items": match_result.qualification_items,
-            "responsibilities": match_result.responsibilities,
-            "missing_skill_items": match_result.missing_skill_items,
-            "visa_analysis": match_result.visa_analysis,
-            "analysis_warnings": match_result.analysis_warnings,
-            "cv_generation_status": match_result.cv_generation_status,
-            "user_profile_used": match_result.user_profile_used,
-        }
-        job.required_skills = match_result.required_skills
-        job.preferred_skills = match_result.preferred_skills
-        job.missing_skills = match_result.missing_skills
-        job.base_match_score = match_result.match_score
-        job.tailored_cv_match_score = job.tailored_cv_match_score
-        job.match_score = match_result.match_score
-        job.ai_explanation = match_result.ai_explanation
-        job.recommended_action = match_result.recommended_action
-        job.salary = job.salary or match_result.salary
-        job.work_type = match_result.work_type
-        job.experience_level = match_result.experience_level
-        job.visa_requirements = match_result.visa_requirements
-        job.raw_payload = raw_payload
-        job.status = "analyzed"
-        job.analyzed_at = datetime.utcnow()
-        session.commit()
-        self._history(session, job.id, "analyzed", f"Match score {match_result.match_score}")
-        self._notify(session, "new_match", self.notifier.notify_new_matches(job), job.id)
-        return match_result
+            self.task_manager.update_task_progress(task_id, progress_percentage=35, current_step="Extracting skills...")
+            self.task_manager.update_task_progress(task_id, progress_percentage=60, current_step="Calculating match score...")
+            match_result = self.matcher.analyze_job(
+                job,
+                manual_cv,
+                extracted_sections=extraction_result.sections,
+                extraction_warnings=extraction_result.warnings,
+            )
+
+            raw_payload["analysis"] = {
+                "required_skill_items": match_result.required_skill_items,
+                "preferred_skill_items": match_result.preferred_skill_items,
+                "qualification_items": match_result.qualification_items,
+                "responsibilities": match_result.responsibilities,
+                "missing_skill_items": match_result.missing_skill_items,
+                "visa_analysis": match_result.visa_analysis,
+                "analysis_warnings": match_result.analysis_warnings,
+                "cv_generation_status": match_result.cv_generation_status,
+                "user_profile_used": match_result.user_profile_used,
+            }
+            job.required_skills = match_result.required_skills
+            job.preferred_skills = match_result.preferred_skills
+            job.missing_skills = match_result.missing_skills
+            job.base_match_score = match_result.match_score
+            job.tailored_cv_match_score = job.tailored_cv_match_score
+            job.match_score = match_result.match_score
+            job.ai_explanation = match_result.ai_explanation
+            job.recommended_action = match_result.recommended_action
+            job.salary = job.salary or match_result.salary
+            job.work_type = match_result.work_type
+            job.experience_level = match_result.experience_level
+            job.visa_requirements = match_result.visa_requirements
+            job.raw_payload = raw_payload
+            job.status = "analyzed"
+            job.analyzed_at = datetime.utcnow()
+            self.task_manager.update_task_progress(task_id, progress_percentage=90, current_step="Saving analysis results...")
+            session.commit()
+            self._history(session, job.id, "analyzed", f"Match score {match_result.match_score}")
+            self._notify(session, "new_match", self.notifier.notify_new_matches(job), job.id, task_id=task_id)
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return match_result
+        except Exception as exc:
+            self.task_manager.fail_task(
+                task_id,
+                error_message=str(exc),
+                current_step="Job analysis failed",
+                traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+            )
+            raise
 
     def analyze_jobs(self) -> int:
         """Analyze all jobs still in found status."""
+        task_id = self._ensure_task(
+            None,
+            task_name="Analyze queued jobs",
+            task_type="job_analysis_batch",
+            start_step="Loading found jobs",
+        )
         session = self._session()
         try:
             jobs = session.scalars(select(Job).where(Job.status == "found")).all()
-            for job in jobs:
-                self._analyze_job(session, job)
+            total_jobs = max(1, len(jobs))
+            for index, job in enumerate(jobs, start=1):
+                self.task_manager.update_task_progress(
+                    task_id,
+                    progress_percentage=min(95, int((index / total_jobs) * 100)),
+                    current_step=f"Analyzing {job.company} / {job.title}",
+                )
+                self._analyze_job(session, job, parent_task_id=task_id)
+            self.task_manager.complete_task(task_id, current_step="Completed")
             return len(jobs)
+        except Exception as exc:
+            self.task_manager.fail_task(
+                task_id,
+                error_message=str(exc),
+                current_step="Batch analysis failed",
+                traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+            )
+            raise
         finally:
             session.close()
 
@@ -433,7 +574,7 @@ class JobHunterService:
             "cover_letter_path": cover_payload["path"],
         }
 
-    def generate_tailored_cv(self, job_id: int, session: Session | None = None) -> dict[str, str | float]:
+    def generate_tailored_cv(self, job_id: int, session: Session | None = None, task_id: str | None = None) -> dict[str, str | float]:
         """Generate a tailored CV only when explicitly requested."""
         owns_session = session is None
         session = self._session(session)
@@ -441,20 +582,40 @@ class JobHunterService:
             job = session.get(Job, job_id)
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Generate tailored CV for {job.company} - {job.title}",
+                task_type="tailored_cv_generation",
+                context={"job_id": job.id},
+                start_step="Loading base CV",
+            )
             base_cv = self._require_base_cv_content(session)
+            self.task_manager.update_task_progress(task_id, progress_percentage=25, current_step="Generating tailored CV...")
             content = self.cv_adapter.generate(job, base_cv)
+            self.task_manager.update_task_progress(task_id, progress_percentage=70, current_step="Saving tailored CV...")
             document = self._create_generated_document(session, job, "cv", content, "tailored_cv.md")
             job.tailored_cv_path = document.file_path
             job.documents_generated_at = datetime.utcnow()
+            self.task_manager.update_task_progress(task_id, progress_percentage=90, current_step="Calculating tailored match score...")
             score = self._recalculate_tailored_match_for_job(session, job, tailored_cv_content=content, commit=False)
             session.commit()
             self._history(session, job.id, "generated_cv", f"Generated tailored CV version {document.version}")
+            self.task_manager.complete_task(task_id, current_step="Completed")
             return {"path": document.file_path, "content": content, "tailored_cv_match_score": score}
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="Tailored CV generation failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             if owns_session:
                 session.close()
 
-    def generate_cover_letter(self, job_id: int, session: Session | None = None) -> dict[str, str]:
+    def generate_cover_letter(self, job_id: int, session: Session | None = None, task_id: str | None = None) -> dict[str, str]:
         """Generate a tailored cover letter only when explicitly requested."""
         owns_session = session is None
         session = self._session(session)
@@ -462,19 +623,38 @@ class JobHunterService:
             job = session.get(Job, job_id)
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Generate cover letter for {job.company} - {job.title}",
+                task_type="cover_letter_generation",
+                context={"job_id": job.id},
+                start_step="Loading base CV",
+            )
             base_cv = self._require_base_cv_content(session)
+            self.task_manager.update_task_progress(task_id, progress_percentage=30, current_step="Generating cover letter...")
             content = self.cover_letter_generator.generate(job, base_cv)
+            self.task_manager.update_task_progress(task_id, progress_percentage=80, current_step="Saving cover letter...")
             document = self._create_generated_document(session, job, "cover_letter", content, "cover_letter.md")
             job.cover_letter_path = document.file_path
             job.documents_generated_at = datetime.utcnow()
             session.commit()
             self._history(session, job.id, "generated_cover_letter", f"Generated cover letter version {document.version}")
+            self.task_manager.complete_task(task_id, current_step="Completed")
             return {"path": document.file_path, "content": content}
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="Cover letter generation failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             if owns_session:
                 session.close()
 
-    def recalculate_match(self, job_id: int, session: Session | None = None) -> dict[str, float | None]:
+    def recalculate_match(self, job_id: int, session: Session | None = None, task_id: str | None = None) -> dict[str, float | None]:
         """Recalculate stored match scores for the job."""
         owns_session = session is None
         session = self._session(session)
@@ -482,7 +662,15 @@ class JobHunterService:
             job = session.get(Job, job_id)
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Recalculate match for {job.company} - {job.title}",
+                task_type="match_score_calculation",
+                context={"job_id": job.id},
+                start_step="Loading base CV",
+            )
             base_cv = self._base_cv_content(session)
+            self.task_manager.update_task_progress(task_id, progress_percentage=35, current_step="Calculating base match score...")
             base_result = self.matcher.analyze_job(job, base_cv, extracted_sections=self._job_sections(job))
             job.base_match_score = base_result.match_score
             job.match_score = base_result.match_score
@@ -491,13 +679,24 @@ class JobHunterService:
                 tailored_path = Path(job.tailored_cv_path)
                 if tailored_path.exists():
                     tailored_content = tailored_path.read_text(encoding="utf-8")
+                    self.task_manager.update_task_progress(task_id, progress_percentage=75, current_step="Calculating tailored CV match score...")
                     tailored_score = self._recalculate_tailored_match_for_job(session, job, tailored_content, commit=False)
             session.commit()
             self._history(session, job.id, "recalculated_match", f"Base {job.base_match_score}, tailored {tailored_score}")
+            self.task_manager.complete_task(task_id, current_step="Completed")
             return {
                 "base_match_score": job.base_match_score,
                 "tailored_cv_match_score": tailored_score,
             }
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="Match score calculation failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             if owns_session:
                 session.close()
@@ -567,7 +766,7 @@ class JobHunterService:
         finally:
             session.close()
 
-    def apply_to_job(self, job_id: int) -> ApplicationAutomationResult:
+    def apply_to_job(self, job_id: int, task_id: str | None = None) -> ApplicationAutomationResult:
         """Run Playwright automation after explicit approval."""
         session = self._session()
         try:
@@ -576,6 +775,13 @@ class JobHunterService:
                 raise ValueError(f"Job {job_id} not found")
             if job.status != "approved":
                 raise ValueError("Job must be approved before application automation can run")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Run application automation for {job.company} - {job.title}",
+                task_type="playwright_automation",
+                context={"job_id": job.id},
+                start_step="Validating approval and documents",
+            )
 
             manual_cv_path = self._base_cv_path()
             manual_cv_content = manual_cv_path.read_text(encoding="utf-8") if manual_cv_path.exists() else ""
@@ -585,11 +791,13 @@ class JobHunterService:
             ):
                 raise ValueError("A manual CV is required before applying")
 
+            self.task_manager.update_task_progress(task_id, progress_percentage=35, current_step="Launching Playwright automation...")
             result = self.automation.apply(
                 job=job,
                 cv_path=Path(job.tailored_cv_path) if job.tailored_cv_path else manual_cv_path,
                 cover_letter_path=Path(job.cover_letter_path) if job.cover_letter_path else None,
             )
+            self.task_manager.update_task_progress(task_id, progress_percentage=85, current_step="Saving application result...")
             application = Application(
                 job_id=job.id,
                 status=result.status,
@@ -602,8 +810,21 @@ class JobHunterService:
             job.status = result.status
             session.commit()
             self._history(session, job.id, "apply_attempt", result.message)
-            self._notify(session, "application_result", self.notifier.notify_application_result(job, result.message), job.id)
+            self._notify(session, "application_result", self.notifier.notify_application_result(job, result.message), job.id, task_id=task_id)
+            if result.status == "failed":
+                self.task_manager.fail_task(task_id, error_message=result.message, current_step="Automation failed")
+            else:
+                self.task_manager.complete_task(task_id, current_step="Completed")
             return result
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="Playwright automation failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
         finally:
             session.close()
 

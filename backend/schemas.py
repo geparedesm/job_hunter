@@ -70,3 +70,20 @@ class SearchResponse(BaseModel):
     analyzed: int
     pending_approval: int
     skipped: int
+
+
+class TaskRead(BaseModel):
+    """Serializable task execution response."""
+
+    task_id: str
+    task_name: str
+    task_type: str
+    status: str
+    progress_percentage: int
+    current_step: str
+    context_json: dict[str, Any] = Field(default_factory=dict)
+    start_time: datetime
+    finish_time: datetime | None = None
+    execution_duration_seconds: float | None = None
+    error_message: str = ""
+    traceback_summary: str = ""

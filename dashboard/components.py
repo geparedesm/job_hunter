@@ -228,12 +228,52 @@ def render_logs(logs: list[dict[str, Any]]) -> None:
         st.markdown(
             f"""
             <div class="alert-line">
-                <strong>[{item["level"]}]</strong> {item["event_type"]} // {item["message"]}
+                <strong>[{item["level"]}]</strong> {item["event_type"]} // {item["message"]} {f"(task: {item['task_id']})" if item["task_id"] else ""}
                 <div class="tiny">{_fmt_dt(item["timestamp"])}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+
+def render_task_monitor(task_data: dict[str, Any]) -> None:
+    """Render running, completed, and failed tasks."""
+    running = task_data.get("running", [])
+    failed = task_data.get("failed", [])
+    completed = task_data.get("completed", [])
+
+    if not running and not failed and not completed:
+        st.info("No tracked tasks yet.")
+        return
+
+    if running:
+        st.markdown("### Running Tasks")
+        for task in running:
+            st.markdown(
+                f"""
+                <div class="alert-line" style="border-left-color:#facc15">
+                    <strong>[{task["status"].upper()}]</strong> {task["task_name"]}
+                    <div class="tiny">{task["current_step"]} · {task["execution_duration_seconds"] or 0}s · {task["task_id"]}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.progress(max(0, min(100, task["progress_percentage"])) / 100)
+
+    if failed:
+        st.markdown("### Failed Tasks")
+        for task in failed[:5]:
+            st.error(f"{task['task_name']} · {task['current_step']} · {task['error_message']}")
+            if task["traceback_summary"]:
+                with st.expander(f"Traceback {task['task_id']}", expanded=False):
+                    st.code(task["traceback_summary"], language="text")
+
+    if completed:
+        st.markdown("### Recent Completed Tasks")
+        for task in completed[:5]:
+            st.success(
+                f"{task['task_name']} · {task['current_step']} · {task['execution_duration_seconds'] or 0}s"
+            )
 
 
 def render_file_preview_if_exists(path_str: str, label: str) -> None:

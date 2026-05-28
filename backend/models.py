@@ -107,6 +107,7 @@ class JobLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     level: Mapped[str] = mapped_column(String(20), index=True)
     event_type: Mapped[str] = mapped_column(String(100), index=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     message: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -136,3 +137,25 @@ class CVVersion(Base):
     content: Mapped[str] = mapped_column(Text)
     source_path: Mapped[str] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class TaskExecution(Base):
+    """Centralized task execution tracking."""
+
+    __tablename__ = "task_executions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    task_name: Mapped[str] = mapped_column(String(255), index=True)
+    task_type: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    progress_percentage: Mapped[int] = mapped_column(Integer, default=0)
+    current_step: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    start_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    finish_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    execution_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    traceback_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -353,3 +353,32 @@ def test_job_cv_pdf_endpoint_requires_existing_tailored_cv(isolated_env):
 
     assert response.status_code == 400
     assert "No tailored CV exists" in response.json()["detail"]
+
+
+def test_task_endpoints_and_completed_task_tracking(isolated_env, monkeypatch):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    _write_base_cv(service, "# Base CV\n\nPython\n")
+    job = _create_job(session_factory, slug="task-tracking", company="Task Co", title="Backend Engineer")
+    monkeypatch.setattr(service.cv_adapter, "generate", lambda job, base_cv: "# Tailored CV\n\nPython\nDocker\n")
+
+    response = client.post(f"/jobs/{job.id}/generate-cv")
+
+    assert response.status_code == 200
+    tasks_response = client.get("/tasks")
+    running_response = client.get("/tasks/running")
+    assert tasks_response.status_code == 200
+    tasks = tasks_response.json()
+    assert any(task["task_type"] == "tailored_cv_generation" and task["status"] == "completed" for task in tasks)
+    assert running_response.status_code == 200
+    assert all(task["status"] in {"pending", "running"} for task in running_response.json())
+
+    tracked_task = next(task for task in tasks if task["task_type"] == "tailored_cv_generation")
+    single_response = client.get(f"/tasks/{tracked_task['task_id']}")
+    assert single_response.status_code == 200
+    assert single_response.json()["progress_percentage"] == 100
+
+    delete_response = client.delete(f"/tasks/{tracked_task['task_id']}")
+    assert delete_response.status_code == 200

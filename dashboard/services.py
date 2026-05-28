@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.database import SessionLocal
 from backend.models import Application, ApplicationHistory, GeneratedDocument, Job, JobLog, Notification
 from backend.services import JobHunterService
+from backend.task_manager import TaskManager
 from config.loader import PROJECT_ROOT, load_settings
 
 
@@ -38,10 +40,19 @@ class JobFilters:
     date_to: date | None = None
 
 
+BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="job-hunter-dashboard")
+
+
 @st.cache_resource
 def get_job_service() -> JobHunterService:
     """Create a reusable service instance for dashboard actions."""
     return JobHunterService()
+
+
+@st.cache_resource
+def get_task_manager() -> TaskManager:
+    """Create a reusable task manager instance."""
+    return TaskManager()
 
 
 def _detect_sponsorship(job: Job) -> bool:
@@ -89,6 +100,8 @@ def clear_dashboard_caches() -> None:
     get_settings_data.clear()
     get_cv_jobs_data.clear()
     get_cv_preview_data.clear()
+    get_task_monitor_data.clear()
+    get_task_status_counts.clear()
 
 
 def _settings_path() -> Path:
@@ -130,6 +143,7 @@ def get_overview_data() -> dict[str, Any]:
         "active_sources": settings.sources,
         "source_status": source_status,
         "manual_cv_present": bool(_read_manual_cv_content().strip()),
+        "scheduler_running_task": next((task for task in get_task_manager().get_running_tasks() if task["task_type"] == "job_search_scheduler"), None),
     }
 
 
@@ -383,11 +397,38 @@ def get_logs_data(limit: int = 200) -> list[dict[str, Any]]:
             "timestamp": log.created_at,
             "level": log.level,
             "event_type": log.event_type,
+            "task_id": log.task_id or "",
             "message": log.message,
             "metadata": log.metadata_json or {},
         }
         for log in logs
     ]
+
+
+@st.cache_data(ttl=2)
+def get_task_monitor_data(limit: int = 40) -> dict[str, Any]:
+    """Load running and recent task data."""
+    task_manager = get_task_manager()
+    tasks = task_manager.list_tasks(limit=limit)
+    running = [task for task in tasks if task["status"] in {"pending", "running"}]
+    failed = [task for task in tasks if task["status"] == "failed"][:10]
+    completed = [task for task in tasks if task["status"] == "completed"][:10]
+    return {
+        "running": running,
+        "failed": failed,
+        "completed": completed,
+        "all": tasks,
+    }
+
+
+@st.cache_data(ttl=2)
+def get_task_status_counts() -> dict[str, int]:
+    """Summarize task states for quick UI indicators."""
+    tasks = get_task_manager().list_tasks(limit=100)
+    counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0, "cancelled": 0}
+    for task in tasks:
+        counts[task["status"]] = counts.get(task["status"], 0) + 1
+    return counts
 
 
 @st.cache_data(ttl=60)
@@ -429,6 +470,30 @@ def trigger_search_now() -> dict[str, int]:
     return result
 
 
+def launch_search_now() -> dict[str, Any]:
+    """Queue a manual search task in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("job_search_scheduler")
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        "Job search scheduler",
+        "job_search_scheduler",
+        current_step="Queued from dashboard",
+        context={"trigger": "dashboard"},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().search_jobs(task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
+
+
 def generate_documents(job_id: int) -> dict[str, str]:
     """Document generation is intentionally manual-only."""
     result = get_job_service().generate_documents(job_id)
@@ -443,6 +508,30 @@ def generate_tailored_cv(job_id: int) -> dict[str, Any]:
     return result
 
 
+def launch_generate_tailored_cv(job_id: int) -> dict[str, Any]:
+    """Queue tailored CV generation in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("tailored_cv_generation", context={"job_id": job_id})
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        f"Generate tailored CV for job {job_id}",
+        "tailored_cv_generation",
+        current_step="Queued from dashboard",
+        context={"job_id": job_id},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().generate_tailored_cv(job_id, task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
+
+
 def generate_cover_letter(job_id: int) -> dict[str, Any]:
     """Generate a cover letter for a specific job."""
     result = get_job_service().generate_cover_letter(job_id)
@@ -450,11 +539,59 @@ def generate_cover_letter(job_id: int) -> dict[str, Any]:
     return result
 
 
+def launch_generate_cover_letter(job_id: int) -> dict[str, Any]:
+    """Queue cover letter generation in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("cover_letter_generation", context={"job_id": job_id})
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        f"Generate cover letter for job {job_id}",
+        "cover_letter_generation",
+        current_step="Queued from dashboard",
+        context={"job_id": job_id},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().generate_cover_letter(job_id, task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
+
+
 def recalculate_match(job_id: int) -> dict[str, Any]:
     """Recalculate base and tailored match scores for a specific job."""
     result = get_job_service().recalculate_match(job_id)
     clear_dashboard_caches()
     return result
+
+
+def launch_recalculate_match(job_id: int) -> dict[str, Any]:
+    """Queue match recalculation in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("match_score_calculation", context={"job_id": job_id})
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        f"Recalculate match for job {job_id}",
+        "match_score_calculation",
+        current_step="Queued from dashboard",
+        context={"job_id": job_id},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().recalculate_match(job_id, task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
 
 
 def approve_job(job_id: int) -> None:
@@ -480,6 +617,30 @@ def apply_to_job(job_id: int) -> str:
     result = get_job_service().apply_to_job(job_id)
     clear_dashboard_caches()
     return result.message
+
+
+def launch_apply_to_job(job_id: int) -> dict[str, Any]:
+    """Queue the assisted application flow in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("playwright_automation", context={"job_id": job_id})
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        f"Run application automation for job {job_id}",
+        "playwright_automation",
+        current_step="Queued from dashboard",
+        context={"job_id": job_id},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().apply_to_job(job_id, task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
 
 
 def mark_as_applied(job_id: int) -> None:
@@ -517,6 +678,12 @@ def export_job_cv_pdf(job_id: int) -> dict[str, Any]:
     path = get_job_service().export_job_cv_pdf(job_id)
     clear_dashboard_caches()
     return {"path": str(path), "bytes": path.read_bytes()}
+
+
+def is_task_running(task_type: str, *, job_id: int | None = None) -> bool:
+    """Return whether a matching task is already running."""
+    context = {"job_id": job_id} if job_id is not None else None
+    return get_task_manager().find_running_task(task_type, context=context) is not None
 
 
 def save_manual_cv_content(content: str) -> None:

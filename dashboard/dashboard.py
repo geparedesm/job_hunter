@@ -22,17 +22,15 @@ from dashboard.components import (
     render_notifications,
     render_source_status,
     render_statistics_charts,
+    render_task_monitor,
     render_terminal_card,
 )
 from dashboard.services import (
     JobFilters,
     approve_job,
-    apply_to_job,
     clear_dashboard_caches,
     export_base_cv_pdf,
     export_job_cv_pdf,
-    generate_cover_letter,
-    generate_tailored_cv,
     get_application_history_data,
     get_cv_jobs_data,
     get_cv_preview_data,
@@ -43,13 +41,19 @@ from dashboard.services import (
     get_overview_data,
     get_settings_data,
     get_statistics_data,
+    get_task_monitor_data,
+    get_task_status_counts,
+    is_task_running,
+    launch_apply_to_job,
+    launch_generate_cover_letter,
+    launch_generate_tailored_cv,
+    launch_recalculate_match,
+    launch_search_now,
     mark_as_applied,
-    recalculate_match,
     reject_job,
     save_manual_cv_content,
     save_settings_data,
     skip_job,
-    trigger_search_now,
 )
 from dashboard.styles import apply_global_styles
 
@@ -66,7 +70,8 @@ apply_global_styles()
 def run_action(label: str, callback) -> object | None:
     """Run an action and surface errors."""
     try:
-        result = callback()
+        with st.spinner(label):
+            result = callback()
         st.success(label)
         return result
     except Exception as exc:  # pragma: no cover - UI feedback
@@ -74,11 +79,72 @@ def run_action(label: str, callback) -> object | None:
         return None
 
 
+def _init_dashboard_state() -> None:
+    """Initialize persisted dashboard state."""
+    defaults = {
+        "selected_job_id": None,
+        "dashboard_page": "🧠 Overview",
+        "task_monitor_auto_refresh": False,
+        "jobs_keyword": "",
+        "jobs_source": "All sources",
+        "jobs_status": "All statuses",
+        "jobs_location": "",
+        "jobs_min_score": 60,
+        "jobs_sponsorship_only": False,
+        "jobs_required_skills_only": False,
+        "jobs_date_range": (date.today() - timedelta(days=30), date.today()),
+        "job_detail_tab": "Overview",
+        "cv_page_selected_job": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _refresh_task_monitor() -> None:
+    """Refresh only cached task-monitor reads."""
+    get_task_monitor_data.clear()
+    get_task_status_counts.clear()
+    get_overview_data.clear()
+
+
+def _render_task_monitor_block(prefix: str, *, show_controls: bool) -> None:
+    """Render the compact task monitor with manual refresh controls."""
+    task_monitor = get_task_monitor_data()
+    task_counts = get_task_status_counts()
+    st.markdown("### Task Monitor")
+    st.caption(
+        f"Pending {task_counts['pending']} · Running {task_counts['running']} · Completed {task_counts['completed']} · Failed {task_counts['failed']}"
+    )
+    if show_controls:
+        controls = st.columns(2)
+        if controls[0].button("Refresh task status", key=f"{prefix}_task_monitor_refresh", use_container_width=True):
+            _refresh_task_monitor()
+            st.rerun()
+        controls[1].checkbox(
+            "Enable task monitor auto-refresh",
+            key="task_monitor_auto_refresh",
+            help="Refresh only the task monitor every 15 seconds.",
+        )
+    render_task_monitor(task_monitor)
+
+
+def _render_task_monitor_panel(prefix: str, *, show_controls: bool) -> None:
+    """Render task monitor, auto-refreshing only this fragment when enabled."""
+    if st.session_state.get("task_monitor_auto_refresh", False) and hasattr(st, "fragment"):
+        @st.fragment(run_every="15s")
+        def _auto_fragment() -> None:
+            _refresh_task_monitor()
+            _render_task_monitor_block(prefix, show_controls=show_controls)
+
+        _auto_fragment()
+    else:
+        _render_task_monitor_block(prefix, show_controls=show_controls)
+
+
+_init_dashboard_state()
 overview = get_overview_data()
 notifications = get_notifications_data()
-
-if "selected_job_id" not in st.session_state:
-    st.session_state.selected_job_id = None
 
 with st.sidebar:
     st.markdown("## Navigation")
@@ -86,7 +152,10 @@ with st.sidebar:
         "Go to",
         ["🧠 Overview", "🔍 Jobs", "📄 CV", "📊 Statistics", "📁 Applications", "⚙️ Settings", "🧾 Logs"],
         label_visibility="collapsed",
+        key="dashboard_page",
     )
+    st.markdown("---")
+    _render_task_monitor_panel("sidebar", show_controls=True)
     st.markdown("---")
     st.markdown("### Notifications")
     render_notifications(notifications[:5])
@@ -127,36 +196,42 @@ if page == "🧠 Overview":
             eyebrow="Control",
         )
         action_c1, action_c2 = st.columns(2)
-        if action_c1.button("Search Now", use_container_width=True, type="primary"):
-            result = run_action("Search completed", trigger_search_now)
+        scheduler_running = bool(overview["scheduler_running_task"])
+        if action_c1.button("Search Now", use_container_width=True, type="primary", disabled=scheduler_running):
+            result = run_action("Search task queued", launch_search_now)
             if isinstance(result, dict):
-                st.info(
-                    f"Discovered {result['discovered']} jobs, created {result['created']}, analyzed {result['analyzed']}, pending approval {result['pending_approval']}."
-                )
+                st.info(f"Task queued: {result['task_id']}")
                 st.rerun()
         if action_c2.button("Refresh Dashboard Cache", use_container_width=True):
             clear_dashboard_caches()
             st.rerun()
+        if overview["scheduler_running_task"]:
+            st.warning(f"Scheduler running: {overview['scheduler_running_task']['current_step']}")
+        else:
+            st.info("Waiting for next scheduled run.")
     with c2:
         render_terminal_card("API / SOURCE STATUS", "Configured sources currently available below.", eyebrow="Status")
         render_source_status(overview["source_status"])
         st.markdown("### Notifications panel")
         render_notifications(notifications)
+    st.markdown("## Task Monitor")
+    _render_task_monitor_panel("overview", show_controls=False)
 
 elif page == "🔍 Jobs":
     with st.expander("Filters Panel", expanded=True):
         fc1, fc2, fc3 = st.columns(3)
-        keyword = fc1.text_input("Keyword")
-        source = fc1.selectbox("Source", ["All sources"] + [item["source"] for item in overview["source_status"]])
+        keyword = fc1.text_input("Keyword", key="jobs_keyword")
+        source = fc1.selectbox("Source", ["All sources"] + [item["source"] for item in overview["source_status"]], key="jobs_source")
         status = fc2.selectbox(
             "Status",
             ["All statuses", "found", "analyzed", "documents_generated", "pending_approval", "approved", "applied", "rejected", "skipped", "failed"],
+            key="jobs_status",
         )
-        location = fc2.text_input("Location")
-        min_score = fc3.slider("Minimum match score", min_value=0, max_value=100, value=60, step=5)
-        sponsorship_only = fc3.toggle("Sponsorship only", value=False)
-        required_skills_only = st.toggle("Show only jobs with required skills detected", value=False)
-        date_from, date_to = st.date_input("Date range", value=(date.today() - timedelta(days=30), date.today()))
+        location = fc2.text_input("Location", key="jobs_location")
+        min_score = fc3.slider("Minimum match score", min_value=0, max_value=100, step=5, key="jobs_min_score")
+        sponsorship_only = fc3.toggle("Sponsorship only", key="jobs_sponsorship_only")
+        required_skills_only = st.toggle("Show only jobs with required skills detected", key="jobs_required_skills_only")
+        date_from, date_to = st.date_input("Date range", key="jobs_date_range")
         filters = JobFilters(
             keyword=keyword,
             source=source,
@@ -197,7 +272,10 @@ elif page == "🔍 Jobs":
             """,
             unsafe_allow_html=True,
         )
-        selected_label = st.selectbox("Selected job", list(options.keys()))
+        selected_job_index = 0
+        if st.session_state.selected_job_id in options.values():
+            selected_job_index = list(options.values()).index(st.session_state.selected_job_id)
+        selected_label = st.selectbox("Selected job", list(options.keys()), index=selected_job_index, key="jobs_selected_job")
         st.session_state.selected_job_id = options[selected_label]
         selected_job = next(item for item in jobs if item["id"] == st.session_state.selected_job_id)
 
@@ -207,8 +285,12 @@ elif page == "🔍 Jobs":
 
         quick_top = st.columns(4)
         quick_top[0].button("View Analysis Below", key="jobs_view_selected", use_container_width=True, disabled=True)
-        if quick_top[1].button("Generate Tailored CV", key="jobs_generate_cv", use_container_width=True):
-            if run_action("Tailored CV generated", lambda: generate_tailored_cv(st.session_state.selected_job_id)) is not None:
+        cv_task_running = is_task_running("tailored_cv_generation", job_id=st.session_state.selected_job_id)
+        cover_task_running = is_task_running("cover_letter_generation", job_id=st.session_state.selected_job_id)
+        apply_task_running = is_task_running("playwright_automation", job_id=st.session_state.selected_job_id)
+        if quick_top[1].button("Generate Tailored CV", key="jobs_generate_cv", use_container_width=True, disabled=cv_task_running):
+            if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(st.session_state.selected_job_id)) is not None:
+                _refresh_task_monitor()
                 st.rerun()
         if quick_top[2].button("Approve Apply", key="jobs_approve_selected", use_container_width=True):
             if run_action("Job approved", lambda: approve_job(st.session_state.selected_job_id)) is not None:
@@ -222,16 +304,22 @@ elif page == "🔍 Jobs":
         if quick_bottom[1].button("Skip", key="jobs_skip_selected", use_container_width=True):
             if run_action("Job skipped", lambda: skip_job(st.session_state.selected_job_id)) is not None:
                 st.rerun()
-        if quick_bottom[2].button("Generate Cover Letter", key="jobs_generate_cover_letter", use_container_width=True):
-            if run_action("Cover letter generated", lambda: generate_cover_letter(st.session_state.selected_job_id)) is not None:
+        if quick_bottom[2].button("Generate Cover Letter", key="jobs_generate_cover_letter", use_container_width=True, disabled=cover_task_running):
+            if run_action("Cover letter task queued", lambda: launch_generate_cover_letter(st.session_state.selected_job_id)) is not None:
+                _refresh_task_monitor()
                 st.rerun()
 
     if st.session_state.selected_job_id:
         detail = get_job_detail_data(st.session_state.selected_job_id)
         st.markdown("## Job Detail View")
-        tabs = st.tabs(["Overview", "AI Analysis", "CV", "Cover Letter", "Application"])
+        detail_tab = st.radio(
+            "Job detail section",
+            ["Overview", "AI Analysis", "CV", "Cover Letter", "Application"],
+            horizontal=True,
+            key="job_detail_tab",
+        )
 
-        with tabs[0]:
+        if detail_tab == "Overview":
             st.markdown(f"### {detail['company']} // {detail['role']}")
             st.write(f"**Location:** {detail['location'] or 'Unknown'}")
             st.write(f"**Salary:** {detail['salary'] or 'Not provided'}")
@@ -249,7 +337,7 @@ elif page == "🔍 Jobs":
             with st.expander("Full job description", expanded=False):
                 st.write(detail["description"])
 
-        with tabs[1]:
+        if detail_tab == "AI Analysis":
             mc1, mc2, mc3 = st.columns(3)
             mc1.metric("Base CV Match Score", detail["base_match_score"] or 0)
             mc2.metric("Recommendation", detail["recommended_action"] or "N/A")
@@ -259,8 +347,14 @@ elif page == "🔍 Jobs":
                 "Tailored CV Match Score",
                 detail["tailored_cv_match_score"] if detail["tailored_cv_match_score"] is not None else "Not generated yet",
             )
-            if tc2.button("Recalculate Match Scores", key=f"detail_recalculate_match_{detail['id']}", use_container_width=True):
-                if run_action("Match scores recalculated", lambda: recalculate_match(detail["id"])) is not None:
+            if tc2.button(
+                "Recalculate Match Scores",
+                key=f"detail_recalculate_match_{detail['id']}",
+                use_container_width=True,
+                disabled=is_task_running("match_score_calculation", job_id=detail["id"]),
+            ):
+                if run_action("Match recalculation queued", lambda: launch_recalculate_match(detail["id"])) is not None:
+                    _refresh_task_monitor()
                     st.rerun()
             st.write("**Required skills**")
             if detail["required_skill_items"]:
@@ -295,7 +389,7 @@ elif page == "🔍 Jobs":
             st.write("**Analysis summary**")
             st.info(detail["ai_explanation"] or "No AI analysis available.")
 
-        with tabs[2]:
+        if detail_tab == "CV":
             st.info("Tailored CV generation is manual only. Nothing is generated during search or scheduling.")
             uploaded_cv = st.file_uploader("Upload manual CV (.md or .txt)", type=["md", "txt"], key=f"manual_cv_upload_{detail['id']}")
             current_cv_value = detail["manual_cv_content"]
@@ -317,8 +411,14 @@ elif page == "🔍 Jobs":
                 file_name=f"{detail['company']}_{detail['role']}_cv.md".replace(" ", "_"),
                 use_container_width=True,
             )
-            if c3.button("Generate Tailored CV", key=f"detail_generate_cv_{detail['id']}", use_container_width=True):
-                if run_action("Tailored CV generated", lambda: generate_tailored_cv(detail["id"])) is not None:
+            if c3.button(
+                "Generate Tailored CV",
+                key=f"detail_generate_cv_{detail['id']}",
+                use_container_width=True,
+                disabled=is_task_running("tailored_cv_generation", job_id=detail["id"]),
+            ):
+                if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(detail["id"])) is not None:
+                    _refresh_task_monitor()
                     st.rerun()
             if detail["generated_cv_path"]:
                 st.write(f"Stored file: `{detail['generated_cv_path']}`")
@@ -332,14 +432,26 @@ elif page == "🔍 Jobs":
                 with st.expander("Preview tailored CV", expanded=False):
                     st.code(detail["generated_cv"], language="markdown")
 
-        with tabs[3]:
+        if detail_tab == "Cover Letter":
             st.info("Cover letters are generated only when you press the button below.")
             cl1, cl2 = st.columns(2)
-            if cl1.button("Generate Cover Letter", key=f"detail_generate_cover_letter_{detail['id']}", use_container_width=True):
-                if run_action("Cover letter generated", lambda: generate_cover_letter(detail["id"])) is not None:
+            if cl1.button(
+                "Generate Cover Letter",
+                key=f"detail_generate_cover_letter_{detail['id']}",
+                use_container_width=True,
+                disabled=is_task_running("cover_letter_generation", job_id=detail["id"]),
+            ):
+                if run_action("Cover letter task queued", lambda: launch_generate_cover_letter(detail["id"])) is not None:
+                    _refresh_task_monitor()
                     st.rerun()
-            if cl2.button("Recalculate Match Scores", key=f"detail_recalculate_match_cover_{detail['id']}", use_container_width=True):
-                if run_action("Match scores recalculated", lambda: recalculate_match(detail["id"])) is not None:
+            if cl2.button(
+                "Recalculate Match Scores",
+                key=f"detail_recalculate_match_cover_{detail['id']}",
+                use_container_width=True,
+                disabled=is_task_running("match_score_calculation", job_id=detail["id"]),
+            ):
+                if run_action("Match recalculation queued", lambda: launch_recalculate_match(detail["id"])) is not None:
+                    _refresh_task_monitor()
                     st.rerun()
             st.write(f"Recommended action: {detail['recommended_action'] or 'N/A'}")
             st.write(f"Top required skills: {', '.join(detail['required_skills']) or 'No skills extracted'}")
@@ -358,7 +470,7 @@ elif page == "🔍 Jobs":
             else:
                 st.caption("Cover letter not generated yet.")
 
-        with tabs[4]:
+        if detail_tab == "Application":
             st.warning("Approval required before any assisted application flow runs.")
             a1, a2, a3 = st.columns(3)
             if a1.button("Approve Apply", key=f"detail_approve_{detail['id']}", use_container_width=True):
@@ -370,10 +482,16 @@ elif page == "🔍 Jobs":
             if a3.button("Mark as Applied", key=f"detail_mark_applied_{detail['id']}", use_container_width=True):
                 if run_action("Job marked as applied", lambda: mark_as_applied(detail["id"])) is not None:
                     st.rerun()
-            if st.button("Run Assisted Application Flow", key=f"detail_assisted_apply_{detail['id']}", use_container_width=True):
-                message = run_action("Application flow completed", lambda: apply_to_job(detail["id"]))
+            if st.button(
+                "Run Assisted Application Flow",
+                key=f"detail_assisted_apply_{detail['id']}",
+                use_container_width=True,
+                disabled=is_task_running("playwright_automation", job_id=detail["id"]),
+            ):
+                message = run_action("Application task queued", lambda: launch_apply_to_job(detail["id"]))
                 if message:
-                    st.info(message)
+                    st.info(f"Task queued: {message['task_id']}")
+                    _refresh_task_monitor()
                     st.rerun()
             s1, s2 = st.columns(2)
             with s1:
@@ -476,8 +594,14 @@ elif page == "📄 CV":
                 st.code(cv_detail["tailored_cv_content"], language="markdown")
             else:
                 st.info("No tailored CV exists for this job yet.")
-                if st.button("Generate Tailored CV", key=f"cv_page_generate_cv_{selected_cv_job_id}", use_container_width=True):
-                    if run_action("Tailored CV generated", lambda: generate_tailored_cv(selected_cv_job_id)) is not None:
+                if st.button(
+                    "Generate Tailored CV",
+                    key=f"cv_page_generate_cv_{selected_cv_job_id}",
+                    use_container_width=True,
+                    disabled=is_task_running("tailored_cv_generation", job_id=selected_cv_job_id),
+                ):
+                    if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(selected_cv_job_id)) is not None:
+                        _refresh_task_monitor()
                         st.rerun()
 
 elif page == "📁 Applications":

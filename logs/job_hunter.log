@@ -2,3 +2,163 @@
 2026-05-28 11:46:51,973 INFO job_skipped | Safe Search Co Python Developer
 2026-05-28 11:47:18,378 INFO collector_results | fake: 1 jobs discovered
 2026-05-28 11:47:18,391 INFO job_skipped | Safe Search Co Python Developer
+2026-05-28 11:50:49,618 INFO collector_results | fake: 1 jobs discovered
+2026-05-28 11:50:49,629 INFO job_skipped | Safe Search Co Python Developer
+2026-05-28 12:00:49,997 INFO notification_sent | New job found
+2026-05-28 12:00:50,122 INFO notification_sent | New job found
+2026-05-28 12:00:50,192 INFO collector_results | fake: 1 jobs discovered
+2026-05-28 12:00:50,209 INFO notification_sent | New job found
+2026-05-28 12:00:50,215 INFO job_skipped | Safe Search Co Python Developer
+2026-05-28 13:04:23,087 INFO collector_results | adzuna: 71 jobs discovered
+2026-05-28 13:04:24,311 INFO notification_sent | New job found
+2026-05-28 13:04:24,317 INFO notification_sent | Pending approval
+2026-05-28 13:04:29,189 INFO notification_sent | New job found
+2026-05-28 13:04:29,193 INFO job_skipped | Bankwest Advanced Analytics Senior Analyst (12-Month Fixed Term)
+2026-05-28 13:04:31,014 INFO notification_sent | New job found
+2026-05-28 13:04:31,017 INFO job_skipped | Professional Search Group Full-Stack Engineer
+2026-05-28 13:04:32,131 INFO notification_sent | New job found
+2026-05-28 13:04:32,136 INFO notification_sent | Pending approval
+2026-05-28 13:04:33,329 INFO notification_sent | New job found
+2026-05-28 13:04:33,333 INFO job_skipped | Genus Group Data & Integration Specialist
+2026-05-28 13:04:34,255 INFO notification_sent | New job found
+2026-05-28 13:04:34,260 INFO job_skipped | Profusion Group Senior Python Developer
+2026-05-28 13:04:35,393 INFO notification_sent | New job found
+2026-05-28 13:04:35,397 INFO job_skipped | Tech Aalto Python Developer
+2026-05-28 13:04:36,568 INFO notification_sent | New job found
+2026-05-28 13:04:36,572 INFO job_skipped | Ingrity Python Developer
+2026-05-28 13:04:37,710 INFO notification_sent | New job found
+2026-05-28 13:04:37,713 INFO job_skipped | Profusion PAC Pty Ltd Senior Python Developer
+2026-05-28 13:04:39,878 INFO notification_sent | New job found
+2026-05-28 13:04:39,882 INFO job_skipped | CU Services Pty Limited Quantitative Developer (Python)
+2026-05-28 13:04:41,092 INFO notification_sent | New job found
+2026-05-28 13:04:41,096 INFO job_skipped | KG Talent Mid-Level Full Stack Python Developer
+2026-05-28 13:04:42,416 INFO notification_sent | New job found
+2026-05-28 13:04:42,419 INFO job_skipped | Mindrift Senior Python Developer - Code Migration Specialist
+2026-05-28 13:04:43,584 INFO notification_sent | New job found
+2026-05-28 13:04:43,588 INFO job_skipped | Mindrift Senior Python Developer - Code Migration Specialist
+2026-05-28 13:04:44,758 INFO notification_sent | New job found
+2026-05-28 13:04:44,761 INFO job_skipped | Mindrift Senior Python Developer - Code Migration Specialist
+2026-05-28 13:04:51,990 INFO notification_sent | New job found
+2026-05-28 13:04:51,993 INFO job_skipped | Mindrift Senior Python Developer - Code Migration Specialist
+2026-05-28 13:04:53,136 INFO notification_sent | New job found
+2026-05-28 13:04:53,140 INFO job_skipped | Professional Search Group Full Stack Developer
+2026-05-28 13:04:54,402 INFO notification_sent | New job found
+2026-05-28 13:04:54,406 INFO notification_sent | Pending approval
+2026-05-28 13:04:55,660 INFO notification_sent | New job found
+2026-05-28 13:04:55,665 INFO notification_sent | Pending approval
+2026-05-28 13:04:56,810 INFO notification_sent | New job found
+2026-05-28 13:04:56,814 INFO notification_sent | Pending approval
+2026-05-28 13:05:09,538 INFO notification_sent | New job found
+2026-05-28 13:05:09,544 INFO notification_sent | Pending approval
+2026-05-28 13:05:15,598 INFO notification_sent | New job found
+2026-05-28 13:05:15,602 INFO notification_sent | Pending approval
+2026-05-28 13:05:18,350 INFO notification_sent | New job found
+2026-05-28 13:05:18,354 INFO notification_sent | Pending approval
+2026-05-28 13:05:19,468 INFO notification_sent | New job found
+2026-05-28 13:05:19,472 INFO notification_sent | Pending approval
+2026-05-28 13:05:20,644 INFO notification_sent | New job found
+2026-05-28 13:05:20,649 INFO job_skipped | Yurra Mid-Level Full Stack Developer
+2026-05-28 13:05:21,641 INFO notification_sent | New job found
+2026-05-28 13:05:21,645 INFO job_skipped | Michael Page Full Stack Developer
+2026-05-28 13:05:22,552 INFO notification_sent | New job found
+2026-05-28 13:05:22,554 INFO job_skipped | Programmed Full-Stack Developer
+2026-05-28 13:05:24,665 INFO notification_sent | New job found
+2026-05-28 13:05:24,668 INFO job_skipped | Michael Page ERP Full Stack Developer
+2026-05-28 13:05:25,592 INFO notification_sent | New job found
+2026-05-28 13:05:25,596 INFO job_skipped | Professional Search Group Full Stack Developer (C#, .Net)
+2026-05-28 13:05:46,091 INFO notification_sent | New job found
+2026-05-28 13:05:46,096 INFO job_skipped | Yurra Pty Ltd Mid-Level Full Stack Developer
+2026-05-28 13:05:47,014 INFO notification_sent | New job found
+2026-05-28 13:05:47,018 INFO job_skipped | Ashurst Full Stack Developer - Ashurst Advance
+2026-05-28 13:06:07,588 INFO notification_sent | New job found
+2026-05-28 13:06:07,592 INFO job_skipped | Ashurst Full Stack Developer - Ashurst Advance
+2026-05-28 13:06:08,613 INFO notification_sent | New job found
+2026-05-28 13:06:08,617 INFO job_skipped | MYOB Senior Full Stack Developer - Data & AI
+2026-05-28 13:06:09,813 INFO notification_sent | New job found
+2026-05-28 13:06:09,818 INFO job_skipped | MYOB Senior Full Stack Developer - Data & AI
+2026-05-28 13:06:11,568 INFO notification_sent | New job found
+2026-05-28 13:06:11,571 INFO job_skipped | Thoughtworks Lead Full Stack Developer (Python/NodejsReact)
+2026-05-28 13:06:12,482 INFO notification_sent | New job found
+2026-05-28 13:06:12,489 INFO notification_sent | Pending approval
+2026-05-28 13:06:13,669 INFO notification_sent | New job found
+2026-05-28 13:06:13,673 INFO notification_sent | Pending approval
+2026-05-28 13:06:14,600 INFO notification_sent | New job found
+2026-05-28 13:06:14,605 INFO job_skipped | Pyramid Global Technologies Backend Developer
+2026-05-28 13:06:15,710 INFO notification_sent | New job found
+2026-05-28 13:06:15,713 INFO job_skipped | Pyramid Global Technologies Backend Developers
+2026-05-28 13:06:16,867 INFO notification_sent | New job found
+2026-05-28 13:06:16,869 INFO job_skipped | The HR Ally Backend Developer
+2026-05-28 13:06:18,046 INFO notification_sent | New job found
+2026-05-28 13:06:18,051 INFO job_skipped | Valiant Finance Senior Backend Developer
+2026-05-28 13:06:19,253 INFO notification_sent | New job found
+2026-05-28 13:06:19,263 INFO job_skipped | Compound Direct Backend Developer (TypeScript)
+2026-05-28 13:06:20,424 INFO notification_sent | New job found
+2026-05-28 13:06:20,428 INFO job_skipped | IT Alliance Senior Backend Developer
+2026-05-28 13:06:21,706 INFO notification_sent | New job found
+2026-05-28 13:06:21,713 INFO notification_sent | Pending approval
+2026-05-28 13:06:22,633 INFO notification_sent | New job found
+2026-05-28 13:06:22,637 INFO job_skipped | Pyramid Global Technologies Backend Developer - AWS Connect
+2026-05-28 13:06:24,441 INFO notification_sent | New job found
+2026-05-28 13:06:24,446 INFO notification_sent | Pending approval
+2026-05-28 13:06:25,656 INFO notification_sent | New job found
+2026-05-28 13:06:25,660 INFO job_skipped | Reserve Bank of Australia Backend Software Developer
+2026-05-28 13:06:26,791 INFO notification_sent | New job found
+2026-05-28 13:06:26,797 INFO notification_sent | Pending approval
+2026-05-28 13:06:32,309 INFO notification_sent | New job found
+2026-05-28 13:06:32,315 INFO notification_sent | Pending approval
+2026-05-28 13:06:33,469 INFO notification_sent | New job found
+2026-05-28 13:06:33,473 INFO notification_sent | Pending approval
+2026-05-28 13:06:53,959 INFO notification_sent | New job found
+2026-05-28 13:06:53,966 INFO notification_sent | Pending approval
+2026-05-28 13:06:55,062 INFO notification_sent | New job found
+2026-05-28 13:06:55,066 INFO notification_sent | Pending approval
+2026-05-28 13:06:56,195 INFO notification_sent | New job found
+2026-05-28 13:06:56,199 INFO notification_sent | Pending approval
+2026-05-28 13:07:01,826 INFO notification_sent | New job found
+2026-05-28 13:07:01,831 INFO job_skipped | Honeywell Software Engineer
+2026-05-28 13:07:22,341 INFO notification_sent | New job found
+2026-05-28 13:07:22,346 INFO notification_sent | Pending approval
+2026-05-28 13:07:23,581 INFO notification_sent | New job found
+2026-05-28 13:07:23,585 INFO job_skipped | MPAU Technology Software Engineer
+2026-05-28 13:07:26,535 INFO notification_sent | New job found
+2026-05-28 13:07:26,539 INFO notification_sent | Pending approval
+2026-05-28 13:07:27,748 INFO notification_sent | New job found
+2026-05-28 13:07:27,751 INFO job_skipped | Laundry Rental Services Company CONTRACT ADMINISTRATOR / SOFTWARE ENGINEER / WELDER
+2026-05-28 13:07:28,678 INFO notification_sent | New job found
+2026-05-28 13:07:28,683 INFO job_skipped | TECH WIRE IT PTY LTD Software Engineer - Full Time, Permanent (Multiple Positions Available)
+2026-05-28 13:07:29,593 INFO notification_sent | New job found
+2026-05-28 13:07:29,597 INFO notification_sent | Pending approval
+2026-05-28 13:07:33,874 INFO notification_sent | New job found
+2026-05-28 13:07:33,879 INFO job_skipped | Morgan McKinley Software Engineer
+2026-05-28 13:07:39,156 INFO notification_sent | New job found
+2026-05-28 13:07:39,159 INFO job_skipped | Managed IT Services Australia Software Engineer
+2026-05-28 13:07:40,074 INFO notification_sent | New job found
+2026-05-28 13:07:40,079 INFO job_skipped | Custom Compounding Chemist Pty Ltd Software Engineer
+2026-05-28 13:07:41,066 INFO notification_sent | New job found
+2026-05-28 13:07:41,070 INFO job_skipped | ABB Australia Software Engineer
+2026-05-28 13:08:01,564 INFO notification_sent | New job found
+2026-05-28 13:08:01,570 INFO job_skipped | Slater and Gordon Software Engineer
+2026-05-28 13:08:02,537 INFO notification_sent | New job found
+2026-05-28 13:08:02,542 INFO job_skipped | Next Gen Talent Software Engineer
+2026-05-28 13:08:15,063 INFO notification_sent | New job found
+2026-05-28 13:08:15,067 INFO job_skipped | Camp Australia Software Engineer
+2026-05-28 13:08:16,296 INFO notification_sent | New job found
+2026-05-28 13:08:16,300 INFO job_skipped | Accenture AI Engineering Sr Manager
+2026-05-28 13:08:17,500 INFO notification_sent | New job found
+2026-05-28 13:08:17,659 INFO job_skipped | Tech Aalto Python / Network Automation Engineer
+2026-05-28 13:08:18,782 INFO notification_sent | New job found
+2026-05-28 13:08:18,786 INFO job_skipped | Strategic Partners Australia Back End Developer
+2026-05-28 13:08:20,016 INFO notification_sent | New job found
+2026-05-28 13:08:20,019 INFO job_skipped | WNS Group Manager-Analytics
+2026-05-28 13:08:24,574 INFO notification_sent | New job found
+2026-05-28 13:08:24,578 INFO job_skipped | Charles Darwin University Applications Developer
+2026-05-28 13:08:24,579 INFO collector_results | jsearch: 0 jobs discovered
+2026-05-28 13:08:24,580 INFO collector_results | serpapi: 0 jobs discovered
+2026-05-28 13:09:30,795 INFO notification_sent | New job found
+2026-05-28 13:09:30,899 INFO notification_sent | New job found
+2026-05-28 13:09:30,950 INFO collector_results | fake: 1 jobs discovered
+2026-05-28 13:09:30,965 INFO notification_sent | New job found
+2026-05-28 13:09:30,967 INFO job_skipped | Safe Search Co Python Developer
+2026-05-28 13:10:12,186 INFO collector_results | adzuna: 71 jobs discovered
+2026-05-28 13:10:12,270 INFO collector_results | jsearch: 0 jobs discovered
+2026-05-28 13:10:12,273 INFO collector_results | serpapi: 0 jobs discovered

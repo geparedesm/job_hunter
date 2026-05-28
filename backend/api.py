@@ -5,17 +5,47 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from backend.schemas import ActionResponse, JobRead, SearchResponse, StatisticsRead
+from backend.schemas import ActionResponse, JobRead, SearchResponse, StatisticsRead, TaskRead
 from backend.services import JobHunterService
+from backend.task_manager import TaskManager
 
 app = FastAPI(title="Personal AI Job Hunter", version="0.1.0")
 service = JobHunterService()
+task_manager = TaskManager()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     """Simple health check."""
     return {"status": "ok"}
+
+
+@app.get("/tasks", response_model=list[TaskRead])
+def list_tasks() -> list[TaskRead]:
+    """List tracked tasks."""
+    return [TaskRead(**task) for task in task_manager.list_tasks()]
+
+
+@app.get("/tasks/running", response_model=list[TaskRead])
+def list_running_tasks() -> list[TaskRead]:
+    """List running or pending tasks."""
+    return [TaskRead(**task) for task in task_manager.get_running_tasks()]
+
+
+@app.get("/tasks/{task_id}", response_model=TaskRead)
+def get_task(task_id: str) -> TaskRead:
+    """Get a tracked task by id."""
+    try:
+        return TaskRead(**task_manager.get_task(task_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/tasks/{task_id}", response_model=ActionResponse)
+def delete_task(task_id: str) -> ActionResponse:
+    """Delete a tracked task by id."""
+    task_manager.delete_task(task_id)
+    return ActionResponse(success=True, message="Task deleted", payload={"task_id": task_id})
 
 
 @app.get("/jobs", response_model=list[JobRead])

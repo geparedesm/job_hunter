@@ -32,7 +32,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 def init_db() -> None:
     """Create database tables."""
-    from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
+    from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification, TaskExecution
 
     Base.metadata.create_all(bind=engine)
     _upgrade_sqlite_schema()
@@ -55,10 +55,18 @@ def _upgrade_sqlite_schema() -> None:
         "cover_letter_path": "ALTER TABLE jobs ADD COLUMN cover_letter_path VARCHAR(1000)",
         "documents_generated_at": "ALTER TABLE jobs ADD COLUMN documents_generated_at DATETIME",
     }
+    existing_log_columns = {column["name"] for column in inspector.get_columns("job_logs")} if "job_logs" in inspector.get_table_names() else set()
+    missing_log_columns = {
+        "task_id": "ALTER TABLE job_logs ADD COLUMN task_id VARCHAR(64)",
+    }
 
     with engine.begin() as connection:
         for column_name, ddl in missing_columns.items():
             if column_name in existing_columns:
+                continue
+            connection.execute(text(ddl))
+        for column_name, ddl in missing_log_columns.items():
+            if column_name in existing_log_columns:
                 continue
             connection.execute(text(ddl))
 
