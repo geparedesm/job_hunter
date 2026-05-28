@@ -39,6 +39,8 @@ def get_job(job_id: int) -> dict[str, object]:
         "job": JobRead.model_validate(details["job"]).model_dump(),
         "generated_cv": details["generated_cv"],
         "generated_cover_letter": details["generated_cover_letter"],
+        "generated_cv_path": details.get("generated_cv_path", ""),
+        "generated_cover_letter_path": details.get("generated_cover_letter_path", ""),
     }
 
 
@@ -50,12 +52,42 @@ def search_now() -> SearchResponse:
 
 @app.post("/jobs/{job_id}/generate", response_model=ActionResponse)
 def generate_documents(job_id: int) -> ActionResponse:
-    """Generate tailored documents for a job."""
+    """Document generation is manual-only in this version."""
     try:
         payload = service.generate_documents(job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ActionResponse(success=True, message="Documents generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/generate-cv", response_model=ActionResponse)
+def generate_cv(job_id: int) -> ActionResponse:
+    """Generate a tailored CV only after an explicit user action."""
+    try:
+        payload = service.generate_tailored_cv(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Tailored CV generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/generate-cover-letter", response_model=ActionResponse)
+def generate_cover_letter(job_id: int) -> ActionResponse:
+    """Generate a cover letter only after an explicit user action."""
+    try:
+        payload = service.generate_cover_letter(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Cover letter generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/recalculate-match", response_model=ActionResponse)
+def recalculate_match(job_id: int) -> ActionResponse:
+    """Recalculate base and tailored match scores for a job."""
+    try:
+        payload = service.recalculate_match(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Match scores recalculated", payload=payload)
 
 
 @app.post("/jobs/{job_id}/approve", response_model=ActionResponse)

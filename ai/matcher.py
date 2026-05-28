@@ -1,43 +1,93 @@
-"""Job analysis and matching logic."""
+"""Evidence-based job analysis and matching logic."""
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from dataclasses import dataclass, field
-
-try:
-    from openai import OpenAI
-except ImportError:  # pragma: no cover - optional until dependencies are installed
-    OpenAI = None  # type: ignore[assignment]
+from typing import Any
 
 from backend.models import Job
-from config.loader import PROJECT_ROOT
 
 
-KNOWN_SKILLS = [
-    "python",
-    "fastapi",
-    "django",
-    "flask",
-    "sql",
-    "postgresql",
-    "sqlite",
-    "aws",
-    "docker",
-    "kubernetes",
-    "javascript",
-    "typescript",
-    "react",
-    "node.js",
-    "git",
-    "ci/cd",
-    "redis",
-    "graphql",
-    "rest",
-    "playwright",
-]
+SKILL_CATALOG: dict[str, tuple[str, ...]] = {
+    "Python": ("python",),
+    "JavaScript": ("javascript", "js"),
+    "TypeScript": ("typescript", "ts"),
+    "React": ("react", "reactjs", "react.js"),
+    "Node.js": ("node.js", "nodejs"),
+    "FastAPI": ("fastapi",),
+    "Flask": ("flask",),
+    "Django": ("django",),
+    "SQL": ("sql",),
+    "PostgreSQL": ("postgresql", "postgres"),
+    "MySQL": ("mysql",),
+    "SQLite": ("sqlite",),
+    "MongoDB": ("mongodb", "mongo db"),
+    "Docker": ("docker",),
+    "Kubernetes": ("kubernetes", "k8s"),
+    "AWS": ("aws", "amazon web services"),
+    "Azure": ("azure", "microsoft azure"),
+    "GCP": ("gcp", "google cloud", "google cloud platform"),
+    "Git": ("git", "github", "gitlab", "bitbucket"),
+    "CI/CD": ("ci/cd", "ci cd", "continuous integration", "continuous delivery", "continuous deployment"),
+    "REST APIs": ("rest api", "rest apis", "restful api", "restful services", "api development"),
+    "GraphQL": ("graphql",),
+    "Linux": ("linux",),
+    "Playwright": ("playwright",),
+    "Selenium": ("selenium",),
+    "Streamlit": ("streamlit",),
+    "Pandas": ("pandas",),
+    "NumPy": ("numpy",),
+    "PyTorch": ("pytorch",),
+    "TensorFlow": ("tensorflow",),
+    "Redis": ("redis",),
+    "Terraform": ("terraform",),
+    "Flutter": ("flutter",),
+    "React Native": ("react native",),
+    "Elasticsearch": ("elasticsearch",),
+    "Logstash": ("logstash",),
+    "Kibana": ("kibana",),
+    "Odoo": ("odoo",),
+    "Firebase": ("firebase",),
+    "Microservices": ("microservices", "microservice"),
+}
+
+RESPONSIBILITY_VERBS = (
+    "build",
+    "develop",
+    "design",
+    "maintain",
+    "lead",
+    "collaborate",
+    "implement",
+    "optimize",
+    "support",
+    "deliver",
+    "integrate",
+    "monitor",
+    "architect",
+    "improve",
+)
+
+PREFERRED_MARKERS = ("nice to have", "preferred", "desirable", "bonus", "ideal")
+REQUIRED_MARKERS = ("required", "must have", "requirements", "essential", "you will need", "skills required")
+QUALIFICATION_MARKERS = ("qualification", "experience", "degree", "certification")
+VISA_PATTERNS = (
+    "visa",
+    "sponsorship",
+    "sponsor",
+    "work rights",
+    "unrestricted work rights",
+    "australian citizen",
+    "permanent resident",
+    "must have rights to work in australia",
+    "no sponsorship available",
+)
+
+SECTION_REQUIRED = {"requirements", "qualifications", "tech_stack", "key_skills"}
+SECTION_PREFERRED = {"preferred"}
+METADATA_REQUIRED_HINTS = ("require", "skill", "stack", "tech", "responsib", "qualif", "tag", "categor", "title")
+METADATA_PREFERRED_HINTS = ("preferred", "bonus", "desirable", "nice_to_have")
 
 
 @dataclass(slots=True)
@@ -56,110 +106,375 @@ class MatchResult:
     work_type: str | None = None
     experience_level: str | None = None
     missing_critical_skills: bool = False
+    responsibilities: list[dict[str, Any]] = field(default_factory=list)
+    required_skill_items: list[dict[str, Any]] = field(default_factory=list)
+    preferred_skill_items: list[dict[str, Any]] = field(default_factory=list)
+    qualification_items: list[dict[str, Any]] = field(default_factory=list)
+    missing_skill_items: list[dict[str, Any]] = field(default_factory=list)
+    visa_analysis: dict[str, Any] = field(default_factory=dict)
+    analysis_warnings: list[str] = field(default_factory=list)
+    cv_generation_status: str = "Manual only"
+    user_profile_used: bool = False
 
 
 class JobMatcher:
-    """Analyze jobs against the base CV using OpenAI with a heuristic fallback."""
+    """Analyze jobs against an optional manually provided CV/profile."""
 
-    def __init__(self) -> None:
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-        self.client = OpenAI(api_key=self.api_key) if self.api_key and OpenAI is not None else None
+    def analyze_job(
+        self,
+        job: Job,
+        user_profile_text: str,
+        extracted_sections: dict[str, list[str]] | None = None,
+        extraction_warnings: list[str] | None = None,
+    ) -> MatchResult:
+        """Run evidence-based heuristics on the full job description and metadata."""
+        sections = extracted_sections or {"general": [job.description]}
+        warnings = list(extraction_warnings or [])
+        metadata_items = self._extract_skills_from_metadata(job.raw_payload or {})
+        section_required_items = self._extract_skills_from_sections(sections, target="required")
+        section_preferred_items = self._extract_skills_from_sections(sections, target="preferred")
+        title_items = self._extract_skills_from_text(job.title, category="required", source_name="title", confidence=0.9)
+        description_items = self._extract_skills_from_text(job.description, category="required", source_name="description", confidence=0.68)
 
-    def analyze_job(self, job: Job, base_cv: str) -> MatchResult:
-        """Analyze a job using OpenAI when available, otherwise use heuristics."""
-        if self.client is not None:
-            try:
-                return self._analyze_with_openai(job, base_cv)
-            except Exception:
-                pass
-        return self._analyze_heuristically(job, base_cv)
-
-    def _analyze_with_openai(self, job: Job, base_cv: str) -> MatchResult:
-        prompt_path = PROJECT_ROOT / "ai" / "prompts" / "match_job.md"
-        system_prompt = prompt_path.read_text(encoding="utf-8")
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        "Base CV:\n"
-                        f"{base_cv}\n\n"
-                        "Job:\n"
-                        f"Company: {job.company}\nTitle: {job.title}\nLocation: {job.location}\n"
-                        f"Description:\n{job.description}\n"
-                    ),
-                },
-            ],
+        required_items = self._merge_skill_items(
+            section_required_items,
+            [item for item in metadata_items if item["category"] != "preferred"],
+            title_items,
+            description_items,
         )
-        text = response.output_text
-        payload = json.loads(text)
-        return MatchResult(
-            required_skills=payload.get("required_skills", []),
-            preferred_skills=payload.get("preferred_skills", []),
-            missing_skills=payload.get("missing_skills", []),
-            match_score=float(payload.get("match_score", 0)),
-            ai_explanation=payload.get("ai_explanation", ""),
-            recommended_action=payload.get("recommended_action", "Skip"),
-            salary=payload.get("salary"),
-            location=payload.get("location", job.location),
-            visa_requirements=payload.get("visa_requirements"),
-            work_type=payload.get("work_type"),
-            experience_level=payload.get("experience_level"),
-            missing_critical_skills=bool(payload.get("missing_critical_skills", False)),
+        preferred_items = self._merge_skill_items(
+            section_preferred_items,
+            [item for item in metadata_items if item["category"] == "preferred"],
         )
 
-    def _analyze_heuristically(self, job: Job, base_cv: str) -> MatchResult:
-        description = f"{job.title}\n{job.description}".lower()
-        cv_lower = base_cv.lower()
+        qualification_items = self._extract_qualifications(sections)
+        responsibility_items = self._extract_responsibilities(sections)
+        full_text = self._build_full_text(job, sections)
+        visa_analysis = self._extract_visa_analysis(full_text)
 
-        required_skills = [skill for skill in KNOWN_SKILLS if skill in description]
-        preferred_skills = [skill for skill in required_skills if skill in {"aws", "docker", "kubernetes", "react", "typescript"}]
-        matched_skills = [skill for skill in required_skills if skill in cv_lower]
-        missing_skills = [skill for skill in required_skills if skill not in cv_lower]
+        if not required_items and not preferred_items:
+            warnings.append("No required skills were detected after title, content, and metadata analysis.")
+        if visa_analysis["status"] == "Not mentioned":
+            warnings.append("No visa or work-rights language was found in the extracted content.")
 
-        skill_score = 100.0 if not required_skills else (len(matched_skills) / len(required_skills)) * 100
-        seniority_penalty = 15 if "senior principal" in description or "principal engineer" in description else 0
-        visa_penalty = 20 if "no sponsorship" in description and "visa" in cv_lower else 0
-        score = max(0.0, min(100.0, round(skill_score - seniority_penalty - visa_penalty, 2)))
+        profile_text = self._normalize_profile(user_profile_text)
+        profile_skills = self._extract_profile_skills(profile_text) if profile_text else set()
+        required_names = self._unique_skill_names(required_items)
+        preferred_names = self._unique_skill_names(preferred_items)
 
-        if score >= 80:
-            recommended_action = "Apply"
-        elif score >= 60:
-            recommended_action = "Maybe"
+        missing_items = self._build_missing_skill_items(required_items, preferred_items, profile_skills) if profile_skills else []
+        missing_skills = [item["skill"] for item in missing_items]
+
+        score = self._compute_match_score(required_items, preferred_items, profile_skills, bool(profile_text))
+        recommended_action = "Apply" if score >= 80 else "Maybe" if score >= 60 else "Skip"
+        missing_critical_skills = bool(profile_skills) and len(missing_skills) > max(2, len(required_names) // 2 if required_names else 0)
+
+        explanation_parts = [
+            f"Required skills detected: {', '.join(required_names) if required_names else 'none'}",
+            f"Preferred skills detected: {', '.join(preferred_names) if preferred_names else 'none'}",
+        ]
+        if profile_text:
+            explanation_parts.append(
+                f"Missing skills versus the provided manual CV/profile: {', '.join(missing_skills) if missing_skills else 'none'}"
+            )
         else:
-            recommended_action = "Skip"
-
-        work_type = self._detect_work_type(description)
-        experience_level = self._detect_experience_level(description)
-        visa_requirements = self._detect_visa_requirements(description)
-        salary = self._detect_salary(job.description) or job.salary
-        missing_critical_skills = bool(required_skills) and len(missing_skills) > max(2, len(required_skills) // 2)
-
-        explanation = (
-            f"Good match reasons: matched {len(matched_skills)} of {len(required_skills) or 1} detected required skills. "
-            f"Missing skills: {', '.join(missing_skills) if missing_skills else 'none identified'}. "
-            f"Risk factors: {visa_requirements or 'no major visa requirement detected'}, {experience_level or 'unknown level'}."
-        )
+            explanation_parts.append("No manual CV/profile was provided, so missing-skills analysis is limited.")
+        explanation_parts.append(f"Visa/work-rights analysis: {visa_analysis['status']}")
 
         return MatchResult(
-            required_skills=required_skills,
-            preferred_skills=preferred_skills,
+            required_skills=required_names,
+            preferred_skills=preferred_names,
             missing_skills=missing_skills,
             match_score=score,
-            ai_explanation=explanation,
+            ai_explanation=" ".join(explanation_parts),
             recommended_action=recommended_action,
-            salary=salary,
+            salary=self._detect_salary(full_text) or job.salary,
             location=job.location,
-            visa_requirements=visa_requirements,
-            work_type=work_type,
-            experience_level=experience_level,
+            visa_requirements=visa_analysis["status"],
+            work_type=self._detect_work_type(full_text),
+            experience_level=self._detect_experience_level(full_text),
             missing_critical_skills=missing_critical_skills,
+            responsibilities=responsibility_items,
+            required_skill_items=required_items,
+            preferred_skill_items=preferred_items,
+            qualification_items=qualification_items,
+            missing_skill_items=missing_items,
+            visa_analysis=visa_analysis,
+            analysis_warnings=warnings,
+            cv_generation_status="Manual only",
+            user_profile_used=bool(profile_text),
         )
 
+    def _build_full_text(self, job: Job, sections: dict[str, list[str]]) -> str:
+        blobs = [job.title, job.description]
+        blobs.extend("\n".join(lines) for lines in sections.values())
+        blobs.extend(self._flatten_metadata_strings(job.raw_payload or {}))
+        return "\n".join(blob for blob in blobs if blob)
+
+    def _extract_skills_from_sections(self, sections: dict[str, list[str]], target: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for section_name, lines in sections.items():
+            for line in lines:
+                line_target = self._line_target(section_name, line.lower())
+                if target == "required" and line_target not in {"required", "general"}:
+                    continue
+                if target == "preferred" and line_target not in {"preferred", "general"}:
+                    continue
+                base_confidence = 0.9 if section_name in SECTION_REQUIRED else 0.78
+                if target == "preferred":
+                    base_confidence = 0.82 if section_name in SECTION_PREFERRED else 0.7
+                items.extend(self._extract_skills_from_text(line, target, f"section:{section_name}", base_confidence))
+        return self._dedupe_skill_items(items)
+
+    def _extract_skills_from_metadata(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for key_path, text in self._iter_metadata_strings(payload):
+            category = self._metadata_category(key_path, text)
+            confidence = 0.92 if any(hint in key_path for hint in METADATA_REQUIRED_HINTS) else 0.76
+            if category == "preferred":
+                confidence = 0.8
+            items.extend(self._extract_skills_from_text(text, category, f"metadata:{key_path}", confidence))
+        return self._dedupe_skill_items(items)
+
+    def _extract_skills_from_text(
+        self,
+        text: str,
+        category: str,
+        source_name: str,
+        confidence: float,
+    ) -> list[dict[str, Any]]:
+        if not text:
+            return []
+        line_lower = text.lower()
+        items: list[dict[str, Any]] = []
+        for skill_name, aliases in SKILL_CATALOG.items():
+            matched_alias = next((alias for alias in aliases if self._contains_alias(line_lower, alias)), None)
+            if matched_alias is None:
+                continue
+            items.append(
+                {
+                    "skill": skill_name,
+                    "category": category,
+                    "evidence_text": text,
+                    "confidence_score": min(confidence + (0.04 if line_lower.strip() == matched_alias else 0.0), 0.98),
+                    "source": source_name,
+                }
+            )
+        return items
+
+    def _extract_qualifications(self, sections: dict[str, list[str]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for section_name, lines in sections.items():
+            if section_name not in {"qualifications", "requirements"}:
+                continue
+            for line in lines:
+                if not any(marker in line.lower() for marker in QUALIFICATION_MARKERS):
+                    continue
+                items.append(
+                    {
+                        "skill": line,
+                        "category": "qualification",
+                        "evidence_text": line,
+                        "confidence_score": 0.78 if section_name == "qualifications" else 0.68,
+                    }
+                )
+        return self._dedupe_generic_items(items)
+
+    def _extract_responsibilities(self, sections: dict[str, list[str]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for section_name, lines in sections.items():
+            for line in lines:
+                if section_name == "responsibilities" or line.lower().startswith(RESPONSIBILITY_VERBS):
+                    items.append(
+                        {
+                            "skill": line,
+                            "category": "responsibility",
+                            "evidence_text": line,
+                            "confidence_score": 0.82 if section_name == "responsibilities" else 0.64,
+                        }
+                    )
+        return self._dedupe_generic_items(items)[:12]
+
+    def _extract_visa_analysis(self, full_text: str) -> dict[str, Any]:
+        sentences = re.split(r"(?<=[.!?])\s+", full_text)
+        evidence = [sentence.strip() for sentence in sentences if any(term in sentence.lower() for term in VISA_PATTERNS)]
+        if not evidence:
+            return {"status": "Not mentioned", "evidence": [], "confidence_score": 0.2}
+
+        combined = " ".join(evidence).lower()
+        if any(term in combined for term in ("sponsorship available", "visa sponsorship", "can sponsor")):
+            status = "Sponsorship likely available"
+            confidence = 0.86
+        elif any(
+            term in combined
+            for term in (
+                "no sponsorship",
+                "unable to sponsor",
+                "unrestricted work rights",
+                "must have rights to work in australia",
+                "australian citizen",
+                "permanent resident",
+            )
+        ):
+            if "sponsorship" in combined:
+                status = "Sponsorship not available"
+                confidence = 0.92
+            else:
+                status = "Work rights required"
+                confidence = 0.88
+        else:
+            status = "Work rights required"
+            confidence = 0.72
+
+        return {"status": status, "evidence": evidence[:4], "confidence_score": confidence}
+
+    def _build_missing_skill_items(
+        self,
+        required_items: list[dict[str, Any]],
+        preferred_items: list[dict[str, Any]],
+        profile_skills: set[str],
+    ) -> list[dict[str, Any]]:
+        missing: list[dict[str, Any]] = []
+        for item in required_items + preferred_items:
+            if item["skill"].lower() in profile_skills:
+                continue
+            missing.append(
+                {
+                    "skill": item["skill"],
+                    "category": "missing",
+                    "evidence_text": item["evidence_text"],
+                    "confidence_score": item["confidence_score"],
+                }
+            )
+        return self._dedupe_skill_items(missing)
+
+    def _compute_match_score(
+        self,
+        required_items: list[dict[str, Any]],
+        preferred_items: list[dict[str, Any]],
+        profile_skills: set[str],
+        profile_present: bool,
+    ) -> float:
+        if not profile_present:
+            return 55.0 if required_items or preferred_items else 35.0
+
+        required_names = {item["skill"].lower() for item in required_items}
+        preferred_names = {item["skill"].lower() for item in preferred_items}
+        required_hits = len(required_names & profile_skills)
+        preferred_hits = len(preferred_names & profile_skills)
+
+        required_score = 100.0 if not required_names else (required_hits / len(required_names)) * 100
+        preferred_score = 100.0 if not preferred_names else (preferred_hits / len(preferred_names)) * 100
+        return round((required_score * 0.8) + (preferred_score * 0.2), 2)
+
+    def _extract_profile_skills(self, profile_text: str) -> set[str]:
+        items = self._extract_skills_from_text(profile_text, "required", "profile", 0.9)
+        return {item["skill"].lower() for item in items}
+
+    def _normalize_profile(self, profile_text: str) -> str:
+        placeholder = "# base cv replace this file with your source-of-truth cv in markdown."
+        lowered = " ".join(profile_text.lower().split())
+        if not profile_text.strip() or placeholder in lowered:
+            return ""
+        return profile_text
+
+    def _unique_skill_names(self, items: list[dict[str, Any]]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in items:
+            name = item["skill"]
+            if name in seen:
+                continue
+            seen.add(name)
+            ordered.append(name)
+        return ordered
+
+    def _line_target(self, section_name: str, line_lower: str) -> str:
+        if section_name in SECTION_REQUIRED:
+            return "required"
+        if section_name in SECTION_PREFERRED:
+            return "preferred"
+        if any(marker in line_lower for marker in PREFERRED_MARKERS):
+            return "preferred"
+        if any(marker in line_lower for marker in REQUIRED_MARKERS):
+            return "required"
+        return "general"
+
+    def _metadata_category(self, key_path: str, text: str) -> str:
+        key_lower = key_path.lower()
+        text_lower = text.lower()
+        if any(marker in key_lower or marker in text_lower for marker in METADATA_PREFERRED_HINTS):
+            return "preferred"
+        if any(marker in key_lower or marker in text_lower for marker in REQUIRED_MARKERS):
+            return "required"
+        if any(hint in key_lower for hint in METADATA_REQUIRED_HINTS):
+            return "required"
+        return "required"
+
+    def _merge_skill_items(self, *item_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        best_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for group in item_groups:
+            for item in group:
+                key = (item["skill"], item["category"])
+                existing = best_by_key.get(key)
+                if existing is None or item["confidence_score"] > existing["confidence_score"]:
+                    best_by_key[key] = item
+        for group in item_groups:
+            for item in group:
+                key = (item["skill"], item["category"])
+                best = best_by_key[key]
+                if any(existing["skill"] == best["skill"] and existing["category"] == best["category"] for existing in merged):
+                    continue
+                merged.append(best)
+        return merged
+
+    def _contains_alias(self, text: str, alias: str) -> bool:
+        pattern = re.escape(alias.lower()).replace(r"\ ", r"\s+")
+        return re.search(rf"(?<![a-z0-9]){pattern}(?![a-z0-9])", text) is not None
+
+    def _iter_metadata_strings(self, value: Any, key_path: str = "") -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = []
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{key_path}.{key}" if key_path else str(key)
+                items.extend(self._iter_metadata_strings(child, child_path))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                items.extend(self._iter_metadata_strings(child, f"{key_path}[{index}]"))
+        elif isinstance(value, str):
+            cleaned = " ".join(value.split())
+            if cleaned:
+                items.append((key_path.lower(), cleaned))
+        return items
+
+    def _flatten_metadata_strings(self, payload: dict[str, Any]) -> list[str]:
+        return [text for _, text in self._iter_metadata_strings(payload)]
+
+    def _dedupe_skill_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        ordered: list[dict[str, Any]] = []
+        for item in items:
+            key = (item["skill"], item["category"])
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+        return ordered
+
+    def _dedupe_generic_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        ordered: list[dict[str, Any]] = []
+        for item in items:
+            key = item["evidence_text"]
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+        return ordered
+
     def _detect_work_type(self, text: str) -> str | None:
+        text = text.lower()
         if "remote" in text:
             return "remote"
         if "hybrid" in text:
@@ -169,6 +484,7 @@ class JobMatcher:
         return None
 
     def _detect_experience_level(self, text: str) -> str | None:
+        text = text.lower()
         if "junior" in text:
             return "junior"
         if "mid" in text or "intermediate" in text:
@@ -178,10 +494,6 @@ class JobMatcher:
         if "lead" in text:
             return "lead"
         return None
-
-    def _detect_visa_requirements(self, text: str) -> str | None:
-        match = re.search(r"(visa[^.:\n]+|sponsorship[^.:\n]+)", text)
-        return match.group(1).strip() if match else None
 
     def _detect_salary(self, text: str) -> str | None:
         match = re.search(r"(\$[\d,]+(?:\s*-\s*\$[\d,]+)?)", text)

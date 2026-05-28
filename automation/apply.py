@@ -21,7 +21,7 @@ class ApplicationAutomationResult:
 class ApplicationAutomation:
     """Application automation that only runs after explicit approval."""
 
-    def apply(self, job: object, cv_path: Path, cover_letter_path: Path) -> ApplicationAutomationResult:
+    def apply(self, job: object, cv_path: Path, cover_letter_path: Path | None) -> ApplicationAutomationResult:
         """Attempt automation and fall back to assisted mode when needed."""
         if not getattr(job, "url", None):
             return ApplicationAutomationResult(status="failed", message="Missing job URL")
@@ -52,7 +52,7 @@ class ApplicationAutomation:
                 status="approved",
                 message=(
                     f"Application page opened and screenshots captured. Review manually before submitting. "
-                    f"Prepared CV: {cv_path.name}, cover letter: {cover_letter_path.name}."
+                    f"Prepared CV: {cv_path.name}, cover letter: {cover_letter_path.name if cover_letter_path else 'manual only'}."
                 ),
                 before_screenshot_path=before,
                 after_screenshot_path=after,

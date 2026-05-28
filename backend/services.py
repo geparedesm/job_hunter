@@ -24,6 +24,7 @@ from backend.database import SessionLocal, init_db
 from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
 from collectors.adzuna import AdzunaCollector
 from collectors.base import CollectedJob
+from collectors.content_extractor import JobContentExtractor
 from collectors.jsearch import JSearchCollector
 from collectors.serpapi import SerpApiCollector
 from config.loader import PROJECT_ROOT, AppConfig, load_settings
@@ -72,6 +73,7 @@ class JobHunterService:
         self.cover_letter_generator = CoverLetterGenerator()
         self.notifier = ConsoleNotifier()
         self.automation = ApplicationAutomation()
+        self.content_extractor = JobContentExtractor()
 
     def _session(self, session: Session | None = None) -> Session:
         return session or SessionLocal()
@@ -97,6 +99,12 @@ class JobHunterService:
         if latest is None:
             session.add(CVVersion(version=1, content=content, source_path=str(path)))
             session.commit()
+        return content
+
+    def _require_base_cv_content(self, session: Session) -> str:
+        content = self._base_cv_content(session)
+        if not content.strip() or "Replace this file with your source-of-truth CV in markdown." in content:
+            raise ValueError("A base CV is required before generating tailored documents.")
         return content
 
     def _log(self, session: Session, level: str, event_type: str, message: str, metadata: dict[str, Any] | None = None) -> None:
@@ -143,6 +151,8 @@ class JobHunterService:
         return any(config_location.lower() in location_lower for config_location in self.config.locations)
 
     def _persist_job(self, session: Session, collected_job: CollectedJob) -> Job:
+        raw_payload = dict(collected_job.raw_payload)
+        raw_payload["preview_description"] = collected_job.description
         job = Job(
             external_id=collected_job.external_id,
             source=collected_job.source,
@@ -152,7 +162,7 @@ class JobHunterService:
             location=collected_job.location,
             salary=collected_job.salary,
             url=collected_job.url,
-            raw_payload=collected_job.raw_payload,
+            raw_payload=raw_payload,
             status="found",
         )
         session.add(job)
@@ -160,6 +170,39 @@ class JobHunterService:
         session.refresh(job)
         self._history(session, job.id, "found", f"Collected from {job.source}")
         return job
+
+    def _job_output_dir(self, job: Job) -> Path:
+        output_dir = PROJECT_ROOT / "generated" / _slugify(f"{job.company}_{job.title}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _next_document_version(self, session: Session, job_id: int, doc_type: str) -> int:
+        versions = session.scalars(
+            select(GeneratedDocument.version).where(
+                GeneratedDocument.job_id == job_id,
+                GeneratedDocument.doc_type == doc_type,
+            )
+        ).all()
+        return (max(versions) if versions else 0) + 1
+
+    def _create_generated_document(self, session: Session, job: Job, doc_type: str, content: str, file_name: str) -> GeneratedDocument:
+        output_path = self._job_output_dir(job) / file_name
+        output_path.write_text(content, encoding="utf-8")
+        document = GeneratedDocument(
+            job_id=job.id,
+            doc_type=doc_type,
+            version=self._next_document_version(session, job.id, doc_type),
+            file_path=str(output_path),
+            content=content,
+        )
+        session.add(document)
+        return document
+
+    def _job_sections(self, job: Job) -> dict[str, list[str]]:
+        raw_payload = job.raw_payload or {}
+        content_extraction = raw_payload.get("content_extraction", {})
+        sections = content_extraction.get("sections", {})
+        return sections if isinstance(sections, dict) else {"general": [job.description]}
 
     def _apply_filters(self, session: Session, job: Job, match_result: MatchResult) -> tuple[bool, str | None]:
         if job.is_duplicate:
@@ -220,10 +263,9 @@ class JobHunterService:
                         summary.skipped += 1
                         continue
 
-                    self.generate_documents(job.id, session=session)
                     job.status = "pending_approval"
                     session.commit()
-                    self._history(session, job.id, "pending_approval", "Documents generated")
+                    self._history(session, job.id, "pending_approval", "Analysis completed; manual CV required")
                     self._notify(session, "pending_approval", self.notifier.notify_pending_approval(job), job.id)
                     summary.pending_approval += 1
             return summary
@@ -232,11 +274,43 @@ class JobHunterService:
                 session.close()
 
     def _analyze_job(self, session: Session, job: Job) -> MatchResult:
-        base_cv = self._base_cv_content(session)
-        match_result = self.matcher.analyze_job(job, base_cv)
+        manual_cv = self._base_cv_content(session)
+        extraction_result = self.content_extractor.extract(job.url, job.description)
+        preview_description = (job.raw_payload or {}).get("preview_description", job.description)
+        if extraction_result.full_text:
+            job.description = extraction_result.full_text
+        raw_payload = dict(job.raw_payload or {})
+        raw_payload["content_extraction"] = {
+            "source_method": extraction_result.source_method,
+            "warnings": extraction_result.warnings,
+            "is_complete": extraction_result.is_complete,
+            "sections": extraction_result.sections,
+            "preview_description": preview_description,
+        }
+
+        match_result = self.matcher.analyze_job(
+            job,
+            manual_cv,
+            extracted_sections=extraction_result.sections,
+            extraction_warnings=extraction_result.warnings,
+        )
+
+        raw_payload["analysis"] = {
+            "required_skill_items": match_result.required_skill_items,
+            "preferred_skill_items": match_result.preferred_skill_items,
+            "qualification_items": match_result.qualification_items,
+            "responsibilities": match_result.responsibilities,
+            "missing_skill_items": match_result.missing_skill_items,
+            "visa_analysis": match_result.visa_analysis,
+            "analysis_warnings": match_result.analysis_warnings,
+            "cv_generation_status": match_result.cv_generation_status,
+            "user_profile_used": match_result.user_profile_used,
+        }
         job.required_skills = match_result.required_skills
         job.preferred_skills = match_result.preferred_skills
         job.missing_skills = match_result.missing_skills
+        job.base_match_score = match_result.match_score
+        job.tailored_cv_match_score = job.tailored_cv_match_score
         job.match_score = match_result.match_score
         job.ai_explanation = match_result.ai_explanation
         job.recommended_action = match_result.recommended_action
@@ -244,6 +318,7 @@ class JobHunterService:
         job.work_type = match_result.work_type
         job.experience_level = match_result.experience_level
         job.visa_requirements = match_result.visa_requirements
+        job.raw_payload = raw_payload
         job.status = "analyzed"
         job.analyzed_at = datetime.utcnow()
         session.commit()
@@ -263,49 +338,103 @@ class JobHunterService:
             session.close()
 
     def generate_documents(self, job_id: int, session: Session | None = None) -> dict[str, str]:
-        """Generate versioned CV and cover letter markdown documents."""
-        active_session = self._session(session)
-        should_close = session is None
+        """Backward-compatible manual generation entrypoint."""
+        cv_payload = self.generate_tailored_cv(job_id, session=session)
+        cover_payload = self.generate_cover_letter(job_id, session=session)
+        return {
+            "cv_path": cv_payload["path"],
+            "cover_letter_path": cover_payload["path"],
+        }
+
+    def generate_tailored_cv(self, job_id: int, session: Session | None = None) -> dict[str, str | float]:
+        """Generate a tailored CV only when explicitly requested."""
+        owns_session = session is None
+        session = self._session(session)
         try:
-            job = active_session.get(Job, job_id)
+            job = session.get(Job, job_id)
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
-
-            base_cv = self._base_cv_content(active_session)
-            tailored_cv = self.cv_adapter.generate(job, base_cv)
-            cover_letter = self.cover_letter_generator.generate(job, base_cv)
-
-            slug = _slugify(f"{job.company}_{job.title}")
-            root_dir = PROJECT_ROOT / "generated" / slug
-            root_dir.mkdir(parents=True, exist_ok=True)
-            next_version = (active_session.scalar(select(func.max(GeneratedDocument.version)).where(GeneratedDocument.job_id == job.id)) or 0) + 1
-            version_dir = root_dir / f"version_{next_version}"
-            version_dir.mkdir(parents=True, exist_ok=True)
-
-            cv_path = version_dir / "cv.md"
-            cover_path = version_dir / "cover_letter.md"
-            cv_path.write_text(tailored_cv, encoding="utf-8")
-            cover_path.write_text(cover_letter, encoding="utf-8")
-
-            active_session.add_all(
-                [
-                    GeneratedDocument(job_id=job.id, doc_type="cv", version=next_version, file_path=str(cv_path), content=tailored_cv),
-                    GeneratedDocument(job_id=job.id, doc_type="cover_letter", version=next_version, file_path=str(cover_path), content=cover_letter),
-                ]
-            )
-            job.status = "documents_generated"
-            active_session.commit()
-            self._history(active_session, job.id, "documents_generated", f"Version {next_version}")
-            return {"cv": str(cv_path), "cover_letter": str(cover_path)}
+            base_cv = self._require_base_cv_content(session)
+            content = self.cv_adapter.generate(job, base_cv)
+            document = self._create_generated_document(session, job, "cv", content, "tailored_cv.md")
+            job.tailored_cv_path = document.file_path
+            job.documents_generated_at = datetime.utcnow()
+            score = self._recalculate_tailored_match_for_job(session, job, tailored_cv_content=content, commit=False)
+            session.commit()
+            self._history(session, job.id, "generated_cv", f"Generated tailored CV version {document.version}")
+            return {"path": document.file_path, "content": content, "tailored_cv_match_score": score}
         finally:
-            if should_close:
-                active_session.close()
+            if owns_session:
+                session.close()
+
+    def generate_cover_letter(self, job_id: int, session: Session | None = None) -> dict[str, str]:
+        """Generate a tailored cover letter only when explicitly requested."""
+        owns_session = session is None
+        session = self._session(session)
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            base_cv = self._require_base_cv_content(session)
+            content = self.cover_letter_generator.generate(job, base_cv)
+            document = self._create_generated_document(session, job, "cover_letter", content, "cover_letter.md")
+            job.cover_letter_path = document.file_path
+            job.documents_generated_at = datetime.utcnow()
+            session.commit()
+            self._history(session, job.id, "generated_cover_letter", f"Generated cover letter version {document.version}")
+            return {"path": document.file_path, "content": content}
+        finally:
+            if owns_session:
+                session.close()
+
+    def recalculate_match(self, job_id: int, session: Session | None = None) -> dict[str, float | None]:
+        """Recalculate stored match scores for the job."""
+        owns_session = session is None
+        session = self._session(session)
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            base_cv = self._base_cv_content(session)
+            base_result = self.matcher.analyze_job(job, base_cv, extracted_sections=self._job_sections(job))
+            job.base_match_score = base_result.match_score
+            job.match_score = base_result.match_score
+            tailored_score = job.tailored_cv_match_score
+            if job.tailored_cv_path:
+                tailored_path = Path(job.tailored_cv_path)
+                if tailored_path.exists():
+                    tailored_content = tailored_path.read_text(encoding="utf-8")
+                    tailored_score = self._recalculate_tailored_match_for_job(session, job, tailored_content, commit=False)
+            session.commit()
+            self._history(session, job.id, "recalculated_match", f"Base {job.base_match_score}, tailored {tailored_score}")
+            return {
+                "base_match_score": job.base_match_score,
+                "tailored_cv_match_score": tailored_score,
+            }
+        finally:
+            if owns_session:
+                session.close()
+
+    def _recalculate_tailored_match_for_job(
+        self,
+        session: Session,
+        job: Job,
+        tailored_cv_content: str,
+        commit: bool = True,
+    ) -> float:
+        result = self.matcher.analyze_job(job, tailored_cv_content, extracted_sections=self._job_sections(job))
+        job.tailored_cv_match_score = result.match_score
+        if commit:
+            session.commit()
+        return result.match_score
 
     def get_pending_approvals(self) -> list[Job]:
         """Return jobs waiting for explicit user approval."""
         session = self._session()
         try:
-            return session.scalars(select(Job).where(Job.status == "pending_approval").order_by(Job.match_score.desc())).all()
+            return session.scalars(
+                select(Job).where(Job.status == "pending_approval").order_by(func.coalesce(Job.base_match_score, Job.match_score).desc())
+            ).all()
         finally:
             session.close()
 
@@ -361,16 +490,18 @@ class JobHunterService:
             if job.status != "approved":
                 raise ValueError("Job must be approved before application automation can run")
 
-            latest_docs = session.scalars(select(GeneratedDocument).where(GeneratedDocument.job_id == job.id).order_by(GeneratedDocument.version.desc())).all()
-            latest_cv = next((doc for doc in latest_docs if doc.doc_type == "cv"), None)
-            latest_cover = next((doc for doc in latest_docs if doc.doc_type == "cover_letter"), None)
-            if latest_cv is None or latest_cover is None:
-                raise ValueError("Generated documents are required before applying")
+            manual_cv_path = self._base_cv_path()
+            manual_cv_content = manual_cv_path.read_text(encoding="utf-8") if manual_cv_path.exists() else ""
+            if (
+                not manual_cv_content.strip()
+                or "Replace this file with your source-of-truth CV in markdown." in manual_cv_content
+            ):
+                raise ValueError("A manual CV is required before applying")
 
             result = self.automation.apply(
                 job=job,
-                cv_path=Path(latest_cv.file_path),
-                cover_letter_path=Path(latest_cover.file_path),
+                cv_path=Path(job.tailored_cv_path) if job.tailored_cv_path else manual_cv_path,
+                cover_letter_path=Path(job.cover_letter_path) if job.cover_letter_path else None,
             )
             application = Application(
                 job_id=job.id,
@@ -408,7 +539,7 @@ class JobHunterService:
             if status:
                 stmt = stmt.where(Job.status == status)
             if minimum_match_score is not None:
-                stmt = stmt.where(Job.match_score >= minimum_match_score)
+                stmt = stmt.where(func.coalesce(Job.base_match_score, Job.match_score) >= minimum_match_score)
             return session.scalars(stmt).all()
         finally:
             session.close()
@@ -425,7 +556,15 @@ class JobHunterService:
             ).all()
             latest_cv = next((doc.content for doc in documents if doc.doc_type == "cv"), "")
             latest_cover = next((doc.content for doc in documents if doc.doc_type == "cover_letter"), "")
-            return {"job": job, "generated_cv": latest_cv, "generated_cover_letter": latest_cover}
+            latest_cv_path = next((doc.file_path for doc in documents if doc.doc_type == "cv"), job.tailored_cv_path or "")
+            latest_cover_path = next((doc.file_path for doc in documents if doc.doc_type == "cover_letter"), job.cover_letter_path or "")
+            return {
+                "job": job,
+                "generated_cv": latest_cv,
+                "generated_cover_letter": latest_cover,
+                "generated_cv_path": latest_cv_path,
+                "generated_cover_letter_path": latest_cover_path,
+            }
         finally:
             session.close()
 
@@ -438,7 +577,7 @@ class JobHunterService:
 
             total_jobs_found = len(jobs)
             new_jobs = sum(1 for job in jobs if job.found_at >= datetime.utcnow() - timedelta(days=1))
-            scored_jobs = [job.match_score for job in jobs if job.match_score is not None]
+            scored_jobs = [job.base_match_score if job.base_match_score is not None else job.match_score for job in jobs if (job.base_match_score is not None or job.match_score is not None)]
             average_match_score = round(sum(scored_jobs) / len(scored_jobs), 2) if scored_jobs else 0.0
             applications_sent = sum(1 for app in applications if app.status == "applied")
             pending_approvals = sum(1 for job in jobs if job.status == "pending_approval")
@@ -449,8 +588,9 @@ class JobHunterService:
 
             match_by_source: defaultdict[str, list[float]] = defaultdict(list)
             for job in jobs:
-                if job.match_score is not None:
-                    match_by_source[job.source].append(job.match_score)
+                score = job.base_match_score if job.base_match_score is not None else job.match_score
+                if score is not None:
+                    match_by_source[job.source].append(score)
             average_match_score_by_source = {
                 source: round(sum(values) / len(values), 2) for source, values in match_by_source.items()
             }
@@ -494,7 +634,7 @@ class JobHunterService:
                             job.company,
                             job.title,
                             app.submitted_at.isoformat() if app.submitted_at else "",
-                            job.match_score or "",
+                            job.base_match_score if job.base_match_score is not None else job.match_score or "",
                             app.status,
                             job.source,
                         ]

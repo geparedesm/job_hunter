@@ -24,10 +24,15 @@ class JobRead(BaseModel):
     required_skills: list[str] = Field(default_factory=list)
     preferred_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
+    base_match_score: float | None = None
+    tailored_cv_match_score: float | None = None
     match_score: float | None = None
     ai_explanation: str | None = None
     recommended_action: str | None = None
     status: str
+    tailored_cv_path: str | None = None
+    cover_letter_path: str | None = None
+    documents_generated_at: datetime | None = None
     found_at: datetime
 
     model_config = {"from_attributes": True}

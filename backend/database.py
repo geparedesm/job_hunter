@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Generator
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config.loader import PROJECT_ROOT
@@ -35,6 +35,32 @@ def init_db() -> None:
     from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
 
     Base.metadata.create_all(bind=engine)
+    _upgrade_sqlite_schema()
+
+
+def _upgrade_sqlite_schema() -> None:
+    """Safely add newer columns for existing SQLite databases."""
+    if not DATABASE_URL.startswith("sqlite:///"):
+        return
+
+    inspector = inspect(engine)
+    if "jobs" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("jobs")}
+    missing_columns = {
+        "base_match_score": "ALTER TABLE jobs ADD COLUMN base_match_score FLOAT",
+        "tailored_cv_match_score": "ALTER TABLE jobs ADD COLUMN tailored_cv_match_score FLOAT",
+        "tailored_cv_path": "ALTER TABLE jobs ADD COLUMN tailored_cv_path VARCHAR(1000)",
+        "cover_letter_path": "ALTER TABLE jobs ADD COLUMN cover_letter_path VARCHAR(1000)",
+        "documents_generated_at": "ALTER TABLE jobs ADD COLUMN documents_generated_at DATETIME",
+    }
+
+    with engine.begin() as connection:
+        for column_name, ddl in missing_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(text(ddl))
 
 
 def get_db() -> Generator[Session, None, None]:

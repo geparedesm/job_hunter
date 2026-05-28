@@ -43,8 +43,8 @@ class JobHunterSkill:
         return {"id": job.id, "status": job.status}
 
     def generate_documents(self, job_id: int) -> dict[str, str]:
-        """Generate tailored job documents."""
-        return self.service.generate_documents(job_id)
+        """Document generation is manual-only in this version."""
+        raise ValueError("CV and cover letter generation are manual-only. Upload or edit them yourself.")
 
     def apply_to_job(self, job_id: int) -> dict[str, object]:
         """Run gated application automation."""
