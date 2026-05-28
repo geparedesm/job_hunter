@@ -393,28 +393,14 @@ elif page == "🔍 Jobs":
             st.info(detail["ai_explanation"] or "No AI analysis available.")
 
         if detail_tab == "CV":
-            st.info("Tailored CV generation is manual only. Nothing is generated during search or scheduling.")
-            uploaded_cv = st.file_uploader("Upload manual CV (.md or .txt)", type=["md", "txt"], key=f"manual_cv_upload_{detail['id']}")
-            current_cv_value = detail["manual_cv_content"]
-            if uploaded_cv is not None:
-                current_cv_value = uploaded_cv.getvalue().decode("utf-8", errors="ignore")
-            manual_cv_editor = st.text_area(
-                "Manual CV / profile content",
-                value=current_cv_value,
-                height=320,
-                key=f"manual_cv_editor_{detail['id']}",
-            )
-            c1, c2, c3 = st.columns(3)
-            if c1.button("Save Manual CV", key=f"detail_save_manual_cv_{detail['id']}", use_container_width=True):
-                if run_action("Manual CV saved", lambda: save_manual_cv_content(manual_cv_editor)) is not None:
-                    st.rerun()
-            c2.download_button(
+            c1, c2 = st.columns(2)
+            c1.download_button(
                 "Download Current CV",
-                data=manual_cv_editor.encode("utf-8"),
+                data=detail["manual_cv_content"].encode("utf-8"),
                 file_name=f"{detail['company']}_{detail['role']}_cv.md".replace(" ", "_"),
                 use_container_width=True,
             )
-            if c3.button(
+            if c2.button(
                 "Generate Tailored CV",
                 key=f"detail_generate_cv_{detail['id']}",
                 use_container_width=True,
@@ -466,7 +452,7 @@ elif page == "🔍 Jobs":
                 markdown_c1, markdown_c2 = st.columns(2)
                 markdown_c1.download_button(
                     "Download Original CV Markdown",
-                    data=manual_cv_editor.encode("utf-8"),
+                    data=detail["manual_cv_content"].encode("utf-8"),
                     file_name=f"original_cv_{detail['id']}.md",
                     use_container_width=True,
                     key=f"detail_download_original_cv_md_{detail['id']}",
@@ -485,7 +471,7 @@ elif page == "🔍 Jobs":
                 preview_c1, preview_c2 = st.columns(2)
                 with preview_c1:
                     st.markdown("### Original CV")
-                    st.code(manual_cv_editor or "Original CV is empty.", language="markdown")
+                    st.code(detail["manual_cv_content"] or "Original CV is empty.", language="markdown")
                 with preview_c2:
                     st.markdown("### Tailored CV")
                     if detail["generated_cv"].strip():

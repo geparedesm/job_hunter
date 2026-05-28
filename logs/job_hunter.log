@@ -167,3 +167,8 @@
 2026-05-28 13:20:03,702 INFO collector_results | fake: 1 jobs discovered
 2026-05-28 13:20:03,715 INFO notification_sent | New job found
 2026-05-28 13:20:03,717 INFO job_skipped | Safe Search Co Python Developer
+2026-05-28 13:37:34,947 INFO notification_sent | Application update
+2026-05-28 14:16:04,804 INFO notification_sent | Application update
+2026-05-28 14:51:18,181 INFO notification_sent | Application update
+2026-05-28 15:03:29,465 INFO notification_sent | Application update
+2026-05-28 15:03:49,088 INFO notification_sent | Application update
