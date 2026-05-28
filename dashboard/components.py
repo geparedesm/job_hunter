@@ -115,6 +115,8 @@ def build_jobs_dataframe(jobs: list[dict[str, Any]]) -> pd.DataFrame:
                 "Role": job["role"],
                 "Source": job["source"].title(),
                 "Location": job["location"],
+                "Remote": job["remote_status"],
+                "Easy Apply": job["easy_apply"],
                 "Salary": job["salary"],
                 "Match Score": "" if job["match_score"] is None else round(job["match_score"], 1),
                 "Sponsorship": "Yes" if job["sponsorship_detected"] else "No",

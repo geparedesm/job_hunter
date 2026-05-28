@@ -91,6 +91,8 @@ def _init_dashboard_state() -> None:
         "jobs_source": "All sources",
         "jobs_status": "All statuses",
         "jobs_location": "",
+        "jobs_remote_status": "All",
+        "jobs_easy_apply_filter": "All",
         "jobs_min_score": 60,
         "jobs_sponsorship_only": False,
         "jobs_required_skills_only": False,
@@ -231,6 +233,8 @@ elif page == "🔍 Jobs":
             key="jobs_status",
         )
         location = fc2.text_input("Location", key="jobs_location")
+        remote_status = fc3.selectbox("Remote", ["All", "Remote only", "Hybrid only", "On-site only", "Unknown"], key="jobs_remote_status")
+        easy_apply_filter = fc3.selectbox("Easy Apply", ["All", "Easy Apply only", "Non-Easy Apply", "Unknown"], key="jobs_easy_apply_filter")
         min_score = fc3.slider("Minimum match score", min_value=0, max_value=100, step=5, key="jobs_min_score")
         sponsorship_only = fc3.toggle("Sponsorship only", key="jobs_sponsorship_only")
         required_skills_only = st.toggle("Show only jobs with required skills detected", key="jobs_required_skills_only")
@@ -240,6 +244,8 @@ elif page == "🔍 Jobs":
             source=source,
             status=status,
             location=location,
+            remote_status=remote_status,
+            easy_apply_filter=easy_apply_filter,
             minimum_match_score=min_score,
             sponsorship_only=sponsorship_only,
             required_skills_only=required_skills_only,
@@ -283,7 +289,7 @@ elif page == "🔍 Jobs":
         selected_job = next(item for item in jobs if item["id"] == st.session_state.selected_job_id)
 
         st.caption(
-            f"Selected: {selected_job['company']} · {selected_job['role']} · {selected_job['location'] or 'Unknown location'}"
+            f"Selected: {selected_job['company']} · {selected_job['role']} · {selected_job['location'] or 'Unknown location'} · Remote: {selected_job['remote_status']} · Easy Apply: {selected_job['easy_apply']}"
         )
 
         quick_top = st.columns(4)
@@ -324,7 +330,16 @@ elif page == "🔍 Jobs":
 
         if detail_tab == "Overview":
             st.markdown(f"### {detail['company']} // {detail['role']}")
-            st.write(f"**Location:** {detail['location'] or 'Unknown'}")
+            st.write(f"**City:** {detail['city'] or 'Unknown'}")
+            st.write(f"**State:** {detail['state'] or 'Unknown'}")
+            st.write(f"**Country:** {detail['country'] or 'Unknown'}")
+            st.write(f"**Full location:** {detail['full_location'] or 'Unknown'}")
+            st.write(f"**Remote status:** {detail['remote_status'] or 'Unknown'}")
+            st.write(f"**Easy Apply status:** {detail['easy_apply'] or 'Unknown'}")
+            st.write(f"**Easy Apply detection source:** {detail['easy_apply_detection_source'] or 'Unknown'}")
+            st.write(f"**Apply type:** {detail['easy_apply_type'] or 'Unknown'}")
+            st.write(f"**Apply URL:** {detail['url']}")
+            st.write(f"**Raw location:** {detail['raw_location'] or 'Unknown'}")
             st.write(f"**Salary:** {detail['salary'] or 'Not provided'}")
             st.write(f"**Source:** {detail['source']}")
             st.write(f"**Job URL:** {detail['url']}")

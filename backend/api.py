@@ -166,6 +166,16 @@ def recalculate_match(job_id: int) -> ActionResponse:
     return ActionResponse(success=True, message="Match scores recalculated", payload=payload)
 
 
+@app.post("/jobs/backfill-easy-apply", response_model=ActionResponse)
+def backfill_easy_apply(source: str = "adzuna", limit: int | None = None) -> ActionResponse:
+    """Manually re-check Easy Apply detection for existing jobs."""
+    try:
+        payload = service.backfill_easy_apply(source=source, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Easy Apply backfill completed", payload=payload)
+
+
 @app.post("/jobs/{job_id}/approve", response_model=ActionResponse)
 def approve_job(job_id: int) -> ActionResponse:
     """Approve a job for later application automation."""

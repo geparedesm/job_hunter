@@ -33,6 +33,8 @@ class JobFilters:
     source: str = "All sources"
     status: str = "All statuses"
     location: str = ""
+    remote_status: str = "All"
+    easy_apply_filter: str = "All"
     minimum_match_score: int = 0
     sponsorship_only: bool = False
     required_skills_only: bool = False
@@ -60,6 +62,24 @@ def _detect_sponsorship(job: Job) -> bool:
     visa_analysis = analysis.get("visa_analysis", {})
     status = visa_analysis.get("status", "")
     return status in {"Sponsorship likely available", "Sponsorship not available", "Work rights required"}
+
+
+def _remote_label(job: Job) -> str:
+    if job.is_remote in {"Yes", "No", "Hybrid", "Unknown"}:
+        return job.is_remote
+    if job.work_mode == "hybrid":
+        return "Hybrid"
+    if job.work_mode == "remote":
+        return "Yes"
+    if job.work_mode == "onsite":
+        return "No"
+    return "Unknown"
+
+
+def _easy_apply_label(job: Job) -> str:
+    if job.easy_apply in {"Yes", "No", "Unknown"}:
+        return job.easy_apply
+    return "Unknown"
 
 
 def _has_detected_required_skills(job: Job) -> bool:
@@ -164,7 +184,26 @@ def get_jobs_data(filters: JobFilters) -> list[dict[str, Any]]:
             continue
         if filters.status != "All statuses" and job.status != filters.status:
             continue
-        if filters.location and filters.location.lower() not in (job.location or "").lower():
+        location_haystack = " ".join(
+            part for part in [job.city, job.state, job.country, job.full_location, job.raw_location, job.location] if part
+        ).lower()
+        if filters.location and filters.location.lower() not in location_haystack:
+            continue
+        remote_value = _remote_label(job)
+        easy_apply_value = _easy_apply_label(job)
+        if filters.remote_status == "Remote only" and remote_value != "Yes":
+            continue
+        if filters.remote_status == "Hybrid only" and remote_value != "Hybrid":
+            continue
+        if filters.remote_status == "On-site only" and remote_value != "No":
+            continue
+        if filters.remote_status == "Unknown" and remote_value != "Unknown":
+            continue
+        if filters.easy_apply_filter == "Easy Apply only" and easy_apply_value != "Yes":
+            continue
+        if filters.easy_apply_filter == "Non-Easy Apply" and easy_apply_value != "No":
+            continue
+        if filters.easy_apply_filter == "Unknown" and easy_apply_value != "Unknown":
             continue
         if (job.match_score or 0) < filters.minimum_match_score:
             continue
@@ -183,7 +222,14 @@ def get_jobs_data(filters: JobFilters) -> list[dict[str, Any]]:
                 "company": job.company,
                 "role": job.title,
                 "source": job.source,
-                "location": job.location or "",
+                "location": job.full_location or job.raw_location or job.location or "",
+                "city": job.city or "Unknown",
+                "state": job.state or "",
+                "country": job.country or "",
+                "raw_location": job.raw_location or job.location or "",
+                "remote_status": remote_value,
+                "easy_apply": easy_apply_value,
+                "easy_apply_type": job.easy_apply_type or "Unknown",
                 "salary": job.salary or "",
                 "base_match_score": float(job.base_match_score) if job.base_match_score is not None else (float(job.match_score) if job.match_score is not None else None),
                 "tailored_cv_match_score": float(job.tailored_cv_match_score) if job.tailored_cv_match_score is not None else None,
@@ -229,7 +275,16 @@ def get_job_detail_data(job_id: int) -> dict[str, Any]:
             "id": job.id,
             "company": job.company,
             "role": job.title,
-            "location": job.location or "",
+            "location": job.full_location or job.raw_location or job.location or "",
+            "city": job.city or "Unknown",
+            "state": job.state or "",
+            "country": job.country or "",
+            "full_location": job.full_location or job.raw_location or job.location or "",
+            "raw_location": job.raw_location or job.location or "",
+            "remote_status": _remote_label(job),
+            "easy_apply": _easy_apply_label(job),
+            "easy_apply_type": job.easy_apply_type or "Unknown",
+            "easy_apply_detection_source": job.easy_apply_detection_source or "Unknown",
             "salary": job.salary or "",
             "source": job.source,
             "url": job.url,

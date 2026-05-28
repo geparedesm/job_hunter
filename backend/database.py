@@ -49,6 +49,16 @@ def _upgrade_sqlite_schema() -> None:
 
     existing_columns = {column["name"] for column in inspector.get_columns("jobs")}
     missing_columns = {
+        "city": "ALTER TABLE jobs ADD COLUMN city VARCHAR(120)",
+        "state": "ALTER TABLE jobs ADD COLUMN state VARCHAR(120)",
+        "country": "ALTER TABLE jobs ADD COLUMN country VARCHAR(120)",
+        "full_location": "ALTER TABLE jobs ADD COLUMN full_location VARCHAR(255)",
+        "raw_location": "ALTER TABLE jobs ADD COLUMN raw_location VARCHAR(255)",
+        "is_remote": "ALTER TABLE jobs ADD COLUMN is_remote VARCHAR(20)",
+        "work_mode": "ALTER TABLE jobs ADD COLUMN work_mode VARCHAR(20)",
+        "easy_apply": "ALTER TABLE jobs ADD COLUMN easy_apply VARCHAR(20)",
+        "easy_apply_type": "ALTER TABLE jobs ADD COLUMN easy_apply_type VARCHAR(50)",
+        "easy_apply_detection_source": "ALTER TABLE jobs ADD COLUMN easy_apply_detection_source VARCHAR(50)",
         "base_match_score": "ALTER TABLE jobs ADD COLUMN base_match_score FLOAT",
         "tailored_cv_match_score": "ALTER TABLE jobs ADD COLUMN tailored_cv_match_score FLOAT",
         "tailored_cv_path": "ALTER TABLE jobs ADD COLUMN tailored_cv_path VARCHAR(1000)",

@@ -27,6 +27,7 @@ from backend.models import Application, ApplicationHistory, CVVersion, Generated
 from backend.pdf_utils import markdown_to_plain_text, write_simple_pdf
 from backend.task_manager import TaskManager
 from collectors.adzuna import AdzunaCollector
+from collectors.apply_utils import detect_easy_apply
 from collectors.base import CollectedJob
 from collectors.content_extractor import JobContentExtractor
 from collectors.jsearch import JSearchCollector
@@ -161,6 +162,38 @@ class JobHunterService:
             stmt = select(Job).where(Job.url == collected_job.url)
         return session.scalar(stmt)
 
+    def _easy_apply_rank(self, value: str | None) -> int:
+        if value in {"Yes", "No"}:
+            return 2
+        if value == "Unknown":
+            return 1
+        return 0
+
+    def _refresh_easy_apply_detection(
+        self,
+        job: Job,
+        *,
+        description: str,
+        metadata: dict[str, Any],
+        page_text: str = "",
+    ) -> None:
+        detected = detect_easy_apply(
+            source=job.source,
+            url=job.url,
+            description=description,
+            metadata=metadata,
+            page_text=page_text,
+        )
+        current_rank = self._easy_apply_rank(job.easy_apply)
+        detected_rank = self._easy_apply_rank(detected["easy_apply"])
+        if detected_rank < current_rank:
+            return
+        if detected_rank == current_rank and job.easy_apply_detection_source and job.easy_apply != "Unknown":
+            return
+        job.easy_apply = detected["easy_apply"]
+        job.easy_apply_type = detected["easy_apply_type"]
+        job.easy_apply_detection_source = detected["easy_apply_detection_source"]
+
     def _is_blacklisted(self, job: CollectedJob) -> tuple[bool, str | None]:
         combined = f"{job.title} {job.description}".lower()
         company_name = job.company.lower()
@@ -172,13 +205,15 @@ class JobHunterService:
                 return True, f"blacklisted company: {company}"
         return False, None
 
-    def _location_compatible(self, location: str | None) -> bool:
+    def _location_compatible(self, location: str | None, city: str | None = None, state: str | None = None, country: str | None = None, work_mode: str | None = None) -> bool:
         if not self.config.locations:
             return True
-        if not location:
+        if work_mode in {"remote", "hybrid"}:
+            return True
+        haystack = " ".join(part for part in [city, state, country, location] if part).lower()
+        if not haystack:
             return False
-        location_lower = location.lower()
-        return any(config_location.lower() in location_lower for config_location in self.config.locations)
+        return any(config_location.lower() in haystack for config_location in self.config.locations)
 
     def _persist_job(self, session: Session, collected_job: CollectedJob) -> Job:
         raw_payload = dict(collected_job.raw_payload)
@@ -190,6 +225,16 @@ class JobHunterService:
             title=collected_job.title,
             description=collected_job.description,
             location=collected_job.location,
+            city=collected_job.city,
+            state=collected_job.state,
+            country=collected_job.country,
+            full_location=collected_job.full_location or collected_job.location,
+            raw_location=collected_job.raw_location or collected_job.location,
+            is_remote=collected_job.is_remote,
+            work_mode=collected_job.work_mode,
+            easy_apply=collected_job.easy_apply,
+            easy_apply_type=collected_job.easy_apply_type,
+            easy_apply_detection_source=collected_job.easy_apply_detection_source,
             salary=collected_job.salary,
             url=collected_job.url,
             raw_payload=raw_payload,
@@ -387,7 +432,7 @@ class JobHunterService:
     def _apply_filters(self, session: Session, job: Job, match_result: MatchResult) -> tuple[bool, str | None]:
         if job.is_duplicate:
             return False, "duplicate detected"
-        if not self._location_compatible(job.location):
+        if not self._location_compatible(job.full_location or job.location, job.city, job.state, job.country, job.work_mode):
             return False, "location incompatible"
         if match_result.match_score < self.config.minimum_match_score:
             return False, "minimum match score not met"
@@ -509,6 +554,12 @@ class JobHunterService:
                 "sections": extraction_result.sections,
                 "preview_description": preview_description,
             }
+            self._refresh_easy_apply_detection(
+                job,
+                description=job.description,
+                metadata=raw_payload,
+                page_text=extraction_result.full_text,
+            )
 
             self.task_manager.update_task_progress(task_id, progress_percentage=35, current_step="Extracting skills...")
             self.task_manager.update_task_progress(task_id, progress_percentage=60, current_step="Calculating match score...")
@@ -586,6 +637,76 @@ class JobHunterService:
                 task_id,
                 error_message=str(exc),
                 current_step="Batch analysis failed",
+                traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+            )
+            raise
+        finally:
+            session.close()
+
+    def backfill_easy_apply(self, source: str = "adzuna", limit: int | None = None) -> dict[str, int | str]:
+        """Re-check and update Easy Apply values for existing jobs."""
+        task_id = self._ensure_task(
+            None,
+            task_name=f"Backfill Easy Apply ({source})",
+            task_type="easy_apply_backfill",
+            context={"source": source, "limit": limit},
+            start_step="Loading jobs",
+        )
+        session = self._session()
+        try:
+            stmt = select(Job).where(Job.source == source).order_by(Job.found_at.desc())
+            jobs = session.scalars(stmt).all()
+            if limit is not None:
+                jobs = jobs[:limit]
+            total = max(1, len(jobs))
+            updated = 0
+            processed = 0
+            for index, job in enumerate(jobs, start=1):
+                processed += 1
+                self.task_manager.update_task_progress(
+                    task_id,
+                    progress_percentage=min(90, int((index / total) * 100)),
+                    current_step=f"Checking {job.company} / {job.title}",
+                )
+                previous = (job.easy_apply, job.easy_apply_type, job.easy_apply_detection_source)
+                raw_payload = dict(job.raw_payload or {})
+                preview_description = raw_payload.get("preview_description", job.description)
+                page_text = ""
+                if job.source == "adzuna" and self._easy_apply_rank(job.easy_apply) < 2:
+                    extraction = self.content_extractor.extract(job.url, preview_description)
+                    raw_payload["content_extraction"] = {
+                        "source_method": extraction.source_method,
+                        "warnings": extraction.warnings,
+                        "is_complete": extraction.is_complete,
+                        "sections": extraction.sections,
+                        "preview_description": preview_description,
+                    }
+                    page_text = extraction.full_text
+                    if extraction.full_text:
+                        job.description = extraction.full_text
+                self._refresh_easy_apply_detection(
+                    job,
+                    description=job.description,
+                    metadata=raw_payload,
+                    page_text=page_text,
+                )
+                job.raw_payload = raw_payload
+                current = (job.easy_apply, job.easy_apply_type, job.easy_apply_detection_source)
+                if current != previous:
+                    updated += 1
+                session.commit()
+
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return {
+                "source": source,
+                "processed": processed,
+                "updated": updated,
+            }
+        except Exception as exc:
+            self.task_manager.fail_task(
+                task_id,
+                error_message=str(exc),
+                current_step="Backfill failed",
                 traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
             )
             raise

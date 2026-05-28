@@ -10,8 +10,10 @@ from sqlalchemy.orm import sessionmaker
 
 from ai.matcher import JobMatcher
 from backend.models import GeneratedDocument, Job
+from collectors.apply_utils import detect_easy_apply
 from collectors.base import CollectedJob
 from collectors.content_extractor import ExtractionResult
+from collectors.location_utils import detect_work_mode, normalize_location
 
 
 @pytest.fixture
@@ -386,3 +388,208 @@ def test_task_endpoints_and_completed_task_tracking(isolated_env, monkeypatch):
 
     delete_response = client.delete(f"/tasks/{tracked_task['task_id']}")
     assert delete_response.status_code == 200
+
+
+def test_location_normalization_prefers_city_and_detects_remote():
+    location = normalize_location(full_location="Perth, Western Australia, Australia", raw_location="Perth WA", title="Senior Engineer", description="")
+    is_remote, work_mode = detect_work_mode(title="Remote Backend Engineer", description="Work from home role", location_text="Anywhere in Australia")
+
+    assert location["city"] == "Perth"
+    assert location["state"] == "WA"
+    assert location["country"] == "Australia"
+    assert location["full_location"] == "Perth, Australia"
+    assert is_remote == "Yes"
+    assert work_mode == "remote"
+
+
+def test_location_normalization_avoids_state_as_city():
+    assert normalize_location(full_location="New South Wales, Australia")["full_location"] == "Unknown, Australia"
+    assert normalize_location(full_location="Western Australia, Australia")["full_location"] == "Unknown, Australia"
+    assert normalize_location(full_location="Victoria, Australia")["full_location"] == "Unknown, Australia"
+    assert normalize_location(full_location="Sydney, New South Wales, Australia")["full_location"] == "Sydney, Australia"
+    assert normalize_location(full_location="Perth, Western Australia, Australia")["full_location"] == "Perth, Australia"
+    assert normalize_location(full_location="Melbourne, Victoria, Australia")["full_location"] == "Melbourne, Australia"
+    assert normalize_location(full_location="Remote, Australia", title="Remote role")["full_location"] == "Remote, Australia"
+
+
+def test_dashboard_remote_filter_and_precise_location(isolated_env):
+    session_factory = isolated_env["SessionLocal"]
+    dashboard_services = isolated_env["dashboard_services"]
+
+    _create_job(
+        session_factory,
+        slug="remote-job",
+        required_skills=["Python"],
+        raw_payload={"content_extraction": {"is_complete": True}},
+    )
+    with session_factory() as session:
+        remote_job = session.scalar(select(Job).where(Job.url == "https://example.com/jobs/remote-job"))
+        remote_job.city = "Perth"
+        remote_job.state = "WA"
+        remote_job.country = "Australia"
+        remote_job.full_location = "Perth, Australia"
+        remote_job.raw_location = "Perth"
+        remote_job.is_remote = "Yes"
+        session.commit()
+
+    _create_job(
+        session_factory,
+        slug="hybrid-job",
+        required_skills=["Python"],
+        raw_payload={"content_extraction": {"is_complete": True}},
+    )
+    with session_factory() as session:
+        hybrid_job = session.scalar(select(Job).where(Job.url == "https://example.com/jobs/hybrid-job"))
+        hybrid_job.city = "Sydney"
+        hybrid_job.state = "NSW"
+        hybrid_job.country = "Australia"
+        hybrid_job.full_location = "Sydney, Australia"
+        hybrid_job.raw_location = "Sydney"
+        hybrid_job.is_remote = "Hybrid"
+        session.commit()
+
+    dashboard_services.get_jobs_data.clear()
+    remote_jobs = dashboard_services.get_jobs_data(
+        dashboard_services.JobFilters(minimum_match_score=0, remote_status="Remote only", location="Perth")
+    )
+    hybrid_jobs = dashboard_services.get_jobs_data(
+        dashboard_services.JobFilters(minimum_match_score=0, remote_status="Hybrid only")
+    )
+
+    assert len(remote_jobs) == 1
+    assert remote_jobs[0]["location"] == "Perth, Australia"
+    assert remote_jobs[0]["remote_status"] == "Yes"
+    assert len(hybrid_jobs) == 1
+    assert hybrid_jobs[0]["remote_status"] == "Hybrid"
+
+
+def test_easy_apply_detection_from_metadata_url_and_description():
+    metadata_result = detect_easy_apply(source="adzuna", url="https://example.com/apply", description="Standard flow", metadata={"apply_options": "Easy Apply available"})
+    url_result = detect_easy_apply(source="jsearch", url="https://jobs.example.com/easyapply/123", description="Standard flow", metadata={})
+    text_result = detect_easy_apply(source="serpapi", url="https://jobs.example.com/apply", description="Apply in one click through our fast application process", metadata={})
+    unknown_result = detect_easy_apply(source="serpapi", url="https://linkedin.com/jobs/view/123", description="Apply now", metadata={})
+
+    assert metadata_result["easy_apply"] == "Yes"
+    assert metadata_result["easy_apply_detection_source"] == "adzuna_metadata"
+    assert url_result["easy_apply"] == "Yes"
+    assert url_result["easy_apply_detection_source"] == "apply_url_pattern"
+    assert text_result["easy_apply"] == "Yes"
+    assert text_result["easy_apply_detection_source"] == "description_text"
+    assert unknown_result["easy_apply"] == "Unknown"
+
+
+def test_adzuna_easy_apply_detection_from_metadata_html_and_external_url():
+    metadata_result = detect_easy_apply(
+        source="adzuna",
+        url="https://www.adzuna.com.au/details/5713940148?utm_medium=api",
+        description="Standard flow",
+        metadata={"directApply": "True", "reply_to_ad": 1},
+    )
+    html_result = detect_easy_apply(
+        source="adzuna",
+        url="https://www.adzuna.com.au/details/5713940148?utm_medium=api",
+        description="Standard flow",
+        metadata={"redirect_url": "https://www.adzuna.com.au/details/5713940148?utm_medium=api"},
+        page_text="Backend Developer EASY APPLY Apply for this job",
+    )
+    external_result = detect_easy_apply(
+        source="adzuna",
+        url="https://careers.example.com/apply/backend-developer",
+        description="Standard flow",
+        metadata={"redirect_url": "https://careers.example.com/apply/backend-developer"},
+    )
+    unknown_result = detect_easy_apply(
+        source="adzuna",
+        url="https://www.adzuna.com.au/details/9999?utm_medium=api",
+        description="Standard flow",
+        metadata={"redirect_url": "https://www.adzuna.com.au/details/9999?utm_medium=api"},
+    )
+
+    assert metadata_result["easy_apply"] == "Yes"
+    assert metadata_result["easy_apply_type"] == "Easy Apply"
+    assert metadata_result["easy_apply_detection_source"] == "adzuna_metadata"
+    assert html_result["easy_apply"] == "Yes"
+    assert html_result["easy_apply_detection_source"] == "adzuna_html_badge"
+    assert external_result["easy_apply"] == "No"
+    assert external_result["easy_apply_type"] == "External Apply"
+    assert external_result["easy_apply_detection_source"] == "external_apply_url"
+    assert unknown_result["easy_apply"] == "Unknown"
+
+
+def test_adzuna_easy_apply_backfill_updates_existing_jobs(isolated_env, monkeypatch):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    job = _create_job(
+        session_factory,
+        slug="adzuna-backfill",
+        source="adzuna",
+        company="luvo",
+        title="Backend Developer (TypeScript/Node.js)",
+        url="https://www.adzuna.com.au/details/5713940148?utm_medium=api",
+        raw_payload={"redirect_url": "https://www.adzuna.com.au/details/5713940148?utm_medium=api"},
+    )
+
+    with session_factory() as session:
+        stored_job = session.get(Job, job.id)
+        stored_job.easy_apply = "Unknown"
+        stored_job.easy_apply_type = "Unknown"
+        stored_job.easy_apply_detection_source = "platform_apply_flow"
+        session.commit()
+
+    monkeypatch.setattr(
+        service.content_extractor,
+        "extract",
+        lambda url, preview_text: ExtractionResult(
+            full_text="Backend Developer EASY APPLY Apply for this job directApply True",
+            sections={"general": ["Backend Developer EASY APPLY Apply for this job directApply True"]},
+            warnings=[],
+            source_method="test",
+            is_complete=True,
+        ),
+    )
+
+    response = client.post("/jobs/backfill-easy-apply?source=adzuna")
+
+    assert response.status_code == 200
+    assert response.json()["payload"]["updated"] >= 1
+
+    with session_factory() as session:
+        stored_job = session.get(Job, job.id)
+        assert stored_job.easy_apply == "Yes"
+        assert stored_job.easy_apply_type == "Easy Apply"
+        assert stored_job.easy_apply_detection_source in {"adzuna_metadata", "adzuna_html_badge"}
+
+
+def test_dashboard_easy_apply_filter_behavior(isolated_env):
+    session_factory = isolated_env["SessionLocal"]
+    dashboard_services = isolated_env["dashboard_services"]
+
+    _create_job(session_factory, slug="easy-apply-yes", required_skills=["Python"], raw_payload={"content_extraction": {"is_complete": True}})
+    _create_job(session_factory, slug="easy-apply-no", required_skills=["Python"], raw_payload={"content_extraction": {"is_complete": True}})
+    _create_job(session_factory, slug="easy-apply-unknown", required_skills=["Python"], raw_payload={"content_extraction": {"is_complete": True}})
+
+    with session_factory() as session:
+        yes_job = session.scalar(select(Job).where(Job.url == "https://example.com/jobs/easy-apply-yes"))
+        no_job = session.scalar(select(Job).where(Job.url == "https://example.com/jobs/easy-apply-no"))
+        unknown_job = session.scalar(select(Job).where(Job.url == "https://example.com/jobs/easy-apply-unknown"))
+        yes_job.easy_apply = "Yes"
+        yes_job.easy_apply_type = "Easy Apply"
+        no_job.easy_apply = "No"
+        no_job.easy_apply_type = "External Apply"
+        unknown_job.easy_apply = "Unknown"
+        unknown_job.easy_apply_type = "Unknown"
+        session.commit()
+
+    dashboard_services.get_jobs_data.clear()
+    easy_only = dashboard_services.get_jobs_data(dashboard_services.JobFilters(minimum_match_score=0, easy_apply_filter="Easy Apply only"))
+    non_easy = dashboard_services.get_jobs_data(dashboard_services.JobFilters(minimum_match_score=0, easy_apply_filter="Non-Easy Apply"))
+    unknown = dashboard_services.get_jobs_data(dashboard_services.JobFilters(minimum_match_score=0, easy_apply_filter="Unknown"))
+
+    assert len(easy_only) == 1
+    assert easy_only[0]["easy_apply"] == "Yes"
+    assert len(non_easy) == 1
+    assert non_easy[0]["easy_apply"] == "No"
+    assert len(unknown) == 1
+    assert unknown[0]["easy_apply"] == "Unknown"
