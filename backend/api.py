@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from backend.schemas import ActionResponse, JobRead, SearchResponse, StatisticsRead
 from backend.services import JobHunterService
@@ -48,6 +49,42 @@ def get_job(job_id: int) -> dict[str, object]:
 def search_now() -> SearchResponse:
     """Run an immediate search cycle."""
     return SearchResponse(**service.search_now())
+
+
+@app.get("/cv/base")
+def get_base_cv() -> dict[str, object]:
+    """Return the base CV preview payload."""
+    payload = service.get_base_cv()
+    return payload
+
+
+@app.get("/jobs/{job_id}/cv")
+def get_job_cv(job_id: int) -> dict[str, object]:
+    """Return the tailored CV preview payload for a selected job."""
+    try:
+        return service.get_job_cv(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/cv/base/pdf")
+def get_base_cv_pdf(job_id: int | None = None) -> FileResponse:
+    """Export the base CV PDF on demand."""
+    try:
+        path = service.export_base_cv_pdf(job_id=job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path, media_type="application/pdf", filename=path.name)
+
+
+@app.get("/jobs/{job_id}/cv/pdf")
+def get_job_cv_pdf(job_id: int) -> FileResponse:
+    """Export the tailored CV PDF on demand."""
+    try:
+        path = service.export_job_cv_pdf(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
 @app.post("/jobs/{job_id}/generate", response_model=ActionResponse)

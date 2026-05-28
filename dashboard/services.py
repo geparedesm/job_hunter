@@ -87,6 +87,8 @@ def clear_dashboard_caches() -> None:
     get_notifications_data.clear()
     get_logs_data.clear()
     get_settings_data.clear()
+    get_cv_jobs_data.clear()
+    get_cv_preview_data.clear()
 
 
 def _settings_path() -> Path:
@@ -257,6 +259,33 @@ def get_job_detail_data(job_id: int) -> dict[str, Any]:
                 for entry in history_entries
             ],
         }
+
+
+@st.cache_data(ttl=60)
+def get_cv_jobs_data() -> list[dict[str, Any]]:
+    """Load jobs for the dedicated CV page."""
+    with SessionLocal() as session:
+        jobs = session.scalars(select(Job).order_by(Job.updated_at.desc(), Job.found_at.desc())).all()
+
+    return [
+        {
+            "id": job.id,
+            "company": job.company,
+            "role": job.title,
+            "base_match_score": float(job.base_match_score) if job.base_match_score is not None else (float(job.match_score) if job.match_score is not None else None),
+            "tailored_cv_match_score": float(job.tailored_cv_match_score) if job.tailored_cv_match_score is not None else None,
+            "tailored_cv_path": job.tailored_cv_path or "",
+            "documents_generated_at": job.documents_generated_at,
+            "has_tailored_cv": bool(job.tailored_cv_path),
+        }
+        for job in jobs
+    ]
+
+
+@st.cache_data(ttl=60)
+def get_cv_preview_data(job_id: int) -> dict[str, Any]:
+    """Load base and tailored CV preview content for a selected job."""
+    return get_job_service().get_job_cv(job_id)
 
 
 @st.cache_data(ttl=60)
@@ -474,6 +503,20 @@ def get_download_bytes(path_str: str, fallback_content: str) -> bytes:
         if path.exists():
             return path.read_bytes()
     return fallback_content.encode("utf-8")
+
+
+def export_base_cv_pdf(job_id: int | None = None) -> dict[str, Any]:
+    """Export the base CV PDF for the dashboard."""
+    path = get_job_service().export_base_cv_pdf(job_id=job_id)
+    clear_dashboard_caches()
+    return {"path": str(path), "bytes": path.read_bytes()}
+
+
+def export_job_cv_pdf(job_id: int) -> dict[str, Any]:
+    """Export the selected tailored CV PDF for the dashboard."""
+    path = get_job_service().export_job_cv_pdf(job_id)
+    clear_dashboard_caches()
+    return {"path": str(path), "bytes": path.read_bytes()}
 
 
 def save_manual_cv_content(content: str) -> None:

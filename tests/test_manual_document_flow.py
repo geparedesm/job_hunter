@@ -307,3 +307,49 @@ def test_scheduler_search_does_not_generate_documents(isolated_env, monkeypatch)
         assert stored_job.tailored_cv_path is None
         assert stored_job.cover_letter_path is None
         assert documents == []
+
+
+def test_cv_preview_endpoints_and_pdf_exports(isolated_env, monkeypatch):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    _write_base_cv(service, "# Base CV\n\nPython\nDocker\n")
+    job = _create_job(
+        session_factory,
+        slug="cv-preview",
+        company="Preview Labs",
+        title="Platform Engineer",
+    )
+
+    monkeypatch.setattr(service.cv_adapter, "generate", lambda job, base_cv: "# Tailored CV\n\nPython\nDocker\nKubernetes\n")
+    client.post(f"/jobs/{job.id}/generate-cv")
+
+    base_response = client.get("/cv/base")
+    job_response = client.get(f"/jobs/{job.id}/cv")
+    base_pdf_response = client.get(f"/cv/base/pdf?job_id={job.id}")
+    tailored_pdf_response = client.get(f"/jobs/{job.id}/cv/pdf")
+
+    assert base_response.status_code == 200
+    assert "# Base CV" in base_response.json()["content"]
+    assert job_response.status_code == 200
+    assert "Tailored CV" in job_response.json()["tailored_cv_content"]
+    assert base_pdf_response.status_code == 200
+    assert base_pdf_response.headers["content-type"] == "application/pdf"
+    assert base_pdf_response.content.startswith(b"%PDF")
+    assert tailored_pdf_response.status_code == 200
+    assert tailored_pdf_response.content.startswith(b"%PDF")
+
+
+def test_job_cv_pdf_endpoint_requires_existing_tailored_cv(isolated_env):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    _write_base_cv(service, "# Base CV\n\nPython\n")
+    job = _create_job(session_factory, slug="no-tailored-yet")
+
+    response = client.get(f"/jobs/{job.id}/cv/pdf")
+
+    assert response.status_code == 400
+    assert "No tailored CV exists" in response.json()["detail"]

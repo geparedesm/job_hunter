@@ -22,6 +22,7 @@ from ai.matcher import JobMatcher, MatchResult
 from automation.apply import ApplicationAutomation, ApplicationAutomationResult
 from backend.database import SessionLocal, init_db
 from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
+from backend.pdf_utils import markdown_to_plain_text, write_simple_pdf
 from collectors.adzuna import AdzunaCollector
 from collectors.base import CollectedJob
 from collectors.content_extractor import JobContentExtractor
@@ -176,6 +177,16 @@ class JobHunterService:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
+    def _pdf_output_dir(self) -> Path:
+        output_dir = PROJECT_ROOT / "generated" / "pdfs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _safe_cv_pdf_name(self, label: str, job: Job | None = None) -> str:
+        if job is None:
+            return f"{_slugify(label)}.pdf"
+        return f"job_{job.id}_{_slugify(job.company)}_{_slugify(job.title)}_{_slugify(label)}.pdf"
+
     def _next_document_version(self, session: Session, job_id: int, doc_type: str) -> int:
         versions = session.scalars(
             select(GeneratedDocument.version).where(
@@ -203,6 +214,82 @@ class JobHunterService:
         content_extraction = raw_payload.get("content_extraction", {})
         sections = content_extraction.get("sections", {})
         return sections if isinstance(sections, dict) else {"general": [job.description]}
+
+    def get_base_cv(self) -> dict[str, Any]:
+        """Return the base CV content and source path."""
+        session = self._session()
+        try:
+            content = self._base_cv_content(session)
+            return {"content": content, "path": str(self._base_cv_path())}
+        finally:
+            session.close()
+
+    def get_job_cv(self, job_id: int) -> dict[str, Any]:
+        """Return CV preview data for a selected job."""
+        session = self._session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            base_cv = self._base_cv_content(session)
+            generated_cv_content = ""
+            if job.tailored_cv_path and Path(job.tailored_cv_path).exists():
+                generated_cv_content = Path(job.tailored_cv_path).read_text(encoding="utf-8")
+            else:
+                latest_cv = session.scalar(
+                    select(GeneratedDocument)
+                    .where(GeneratedDocument.job_id == job.id, GeneratedDocument.doc_type == "cv")
+                    .order_by(GeneratedDocument.version.desc())
+                )
+                if latest_cv is not None:
+                    generated_cv_content = latest_cv.content
+            return {
+                "job_id": job.id,
+                "company": job.company,
+                "title": job.title,
+                "base_match_score": job.base_match_score if job.base_match_score is not None else job.match_score,
+                "tailored_cv_match_score": job.tailored_cv_match_score,
+                "tailored_cv_path": job.tailored_cv_path or "",
+                "documents_generated_at": job.documents_generated_at,
+                "base_cv_content": base_cv,
+                "tailored_cv_content": generated_cv_content,
+            }
+        finally:
+            session.close()
+
+    def export_base_cv_pdf(self, job_id: int | None = None) -> Path:
+        """Export the base CV to PDF only when explicitly requested."""
+        session = self._session()
+        try:
+            content = self._base_cv_content(session)
+            job = session.get(Job, job_id) if job_id is not None else None
+            filename = self._safe_cv_pdf_name("base_cv", job)
+            return write_simple_pdf(
+                markdown_to_plain_text(content),
+                self._pdf_output_dir() / filename,
+                title="Base CV",
+            )
+        finally:
+            session.close()
+
+    def export_job_cv_pdf(self, job_id: int) -> Path:
+        """Export a tailored CV to PDF only when explicitly requested."""
+        cv_data = self.get_job_cv(job_id)
+        content = cv_data["tailored_cv_content"]
+        if not content.strip():
+            raise ValueError("No tailored CV exists for this job yet.")
+        session = self._session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            return write_simple_pdf(
+                markdown_to_plain_text(content),
+                self._pdf_output_dir() / self._safe_cv_pdf_name("tailored_cv", job),
+                title=f"Tailored CV - {job.company} - {job.title}",
+            )
+        finally:
+            session.close()
 
     def _apply_filters(self, session: Session, job: Job, match_result: MatchResult) -> tuple[bool, str | None]:
         if job.is_duplicate:

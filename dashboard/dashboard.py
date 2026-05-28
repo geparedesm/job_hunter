@@ -29,9 +29,13 @@ from dashboard.services import (
     approve_job,
     apply_to_job,
     clear_dashboard_caches,
+    export_base_cv_pdf,
+    export_job_cv_pdf,
     generate_cover_letter,
     generate_tailored_cv,
     get_application_history_data,
+    get_cv_jobs_data,
+    get_cv_preview_data,
     get_job_detail_data,
     get_jobs_data,
     get_logs_data,
@@ -80,7 +84,7 @@ with st.sidebar:
     st.markdown("## Navigation")
     page = st.radio(
         "Go to",
-        ["🧠 Overview", "🔍 Jobs", "📊 Statistics", "📁 Applications", "⚙️ Settings", "🧾 Logs"],
+        ["🧠 Overview", "🔍 Jobs", "📄 CV", "📊 Statistics", "📁 Applications", "⚙️ Settings", "🧾 Logs"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -381,6 +385,100 @@ elif page == "📊 Statistics":
     stats = get_statistics_data()
     st.markdown("## Statistics")
     render_statistics_charts(stats)
+
+elif page == "📄 CV":
+    st.markdown("## CV")
+    st.caption("Preview the base CV alongside a job-specific tailored CV. PDF exports happen only when you request them.")
+    cv_jobs = get_cv_jobs_data()
+    jobs_with_tailored_cv = [job for job in cv_jobs if job["has_tailored_cv"]]
+
+    if not cv_jobs:
+        st.info("No jobs are available yet. Run a search first.")
+    else:
+        if jobs_with_tailored_cv:
+            preferred_jobs = jobs_with_tailored_cv
+            st.caption(f"Jobs with generated tailored CVs: {len(jobs_with_tailored_cv)}")
+        else:
+            preferred_jobs = cv_jobs
+            st.warning("No tailored CVs exist yet. Select a job below to generate one manually.")
+
+        selected_cv_job_id = st.session_state.selected_job_id if any(job["id"] == st.session_state.selected_job_id for job in preferred_jobs) else preferred_jobs[0]["id"]
+        cv_options = {f"{item['company']} - {item['role']} ({item['id']})": item["id"] for item in preferred_jobs}
+        selected_cv_label = st.selectbox(
+            "Select job for CV preview",
+            list(cv_options.keys()),
+            index=list(cv_options.values()).index(selected_cv_job_id),
+            key="cv_page_selected_job",
+        )
+        selected_cv_job_id = cv_options[selected_cv_label]
+        st.session_state.selected_job_id = selected_cv_job_id
+        cv_detail = get_cv_preview_data(selected_cv_job_id)
+
+        info_c1, info_c2, info_c3, info_c4 = st.columns(4)
+        info_c1.metric("Job Title", cv_detail["title"])
+        info_c2.metric("Company", cv_detail["company"])
+        info_c3.metric("Base CV Match Score", cv_detail["base_match_score"] if cv_detail["base_match_score"] is not None else "N/A")
+        info_c4.metric(
+            "Tailored CV Match Score",
+            cv_detail["tailored_cv_match_score"] if cv_detail["tailored_cv_match_score"] is not None else "Not generated yet",
+        )
+
+        if cv_detail["tailored_cv_path"]:
+            st.write(f"Tailored CV file: `{cv_detail['tailored_cv_path']}`")
+        elif cv_detail["documents_generated_at"]:
+            st.write(f"Generated at: {cv_detail['documents_generated_at']}")
+        else:
+            st.write("Tailored CV status: Not generated yet.")
+
+        base_pdf_state_key = f"base_cv_pdf_payload_{selected_cv_job_id}"
+        tailored_pdf_state_key = f"tailored_cv_pdf_payload_{selected_cv_job_id}"
+        action_c1, action_c2 = st.columns(2)
+        if action_c1.button("Prepare Base CV PDF", use_container_width=True, key=f"cv_base_pdf_prepare_{selected_cv_job_id}"):
+            exported = run_action("Base CV PDF exported", lambda: export_base_cv_pdf(selected_cv_job_id))
+            if isinstance(exported, dict):
+                st.session_state[base_pdf_state_key] = exported
+        base_pdf_payload = st.session_state.get(base_pdf_state_key)
+        if isinstance(base_pdf_payload, dict):
+            action_c1.download_button(
+                "Download Base CV as PDF",
+                data=base_pdf_payload["bytes"],
+                file_name=Path(base_pdf_payload["path"]).name,
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"cv_base_pdf_download_{selected_cv_job_id}",
+            )
+
+        if cv_detail["tailored_cv_content"].strip():
+            if action_c2.button("Prepare Tailored CV PDF", use_container_width=True, key=f"cv_tailored_pdf_prepare_{selected_cv_job_id}"):
+                exported = run_action("Tailored CV PDF exported", lambda: export_job_cv_pdf(selected_cv_job_id))
+                if isinstance(exported, dict):
+                    st.session_state[tailored_pdf_state_key] = exported
+            tailored_pdf_payload = st.session_state.get(tailored_pdf_state_key)
+            if isinstance(tailored_pdf_payload, dict):
+                action_c2.download_button(
+                    "Download Tailored CV as PDF",
+                    data=tailored_pdf_payload["bytes"],
+                    file_name=Path(tailored_pdf_payload["path"]).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"cv_tailored_pdf_download_{selected_cv_job_id}",
+                )
+        else:
+            action_c2.button("Download Tailored CV as PDF", use_container_width=True, disabled=True, key=f"cv_tailored_pdf_disabled_{selected_cv_job_id}")
+
+        preview_c1, preview_c2 = st.columns(2)
+        with preview_c1:
+            st.markdown("### Base CV Preview")
+            st.code(cv_detail["base_cv_content"] or "Base CV is empty.", language="markdown")
+        with preview_c2:
+            st.markdown("### Tailored CV Preview")
+            if cv_detail["tailored_cv_content"].strip():
+                st.code(cv_detail["tailored_cv_content"], language="markdown")
+            else:
+                st.info("No tailored CV exists for this job yet.")
+                if st.button("Generate Tailored CV", key=f"cv_page_generate_cv_{selected_cv_job_id}", use_container_width=True):
+                    if run_action("Tailored CV generated", lambda: generate_tailored_cv(selected_cv_job_id)) is not None:
+                        st.rerun()
 
 elif page == "📁 Applications":
     history = get_application_history_data()
