@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import io
 from pathlib import Path
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from ai.matcher import JobMatcher
+from ai.resume_advisor import ResumeAdvisor
 from backend.models import GeneratedDocument, Job
 from collectors.apply_utils import detect_easy_apply
 from collectors.base import CollectedJob
@@ -668,3 +671,174 @@ def test_dashboard_easy_apply_filter_behavior(isolated_env):
     assert non_easy[0]["easy_apply"] == "No"
     assert len(unknown) == 1
     assert unknown[0]["easy_apply"] == "Unknown"
+
+
+def test_resume_upload_profile_and_keyword_suggestions(isolated_env):
+    client = isolated_env["client"]
+
+    response = client.post(
+        "/resume/upload",
+        files={
+            "file": (
+                "resume.md",
+                (
+                    "# Resume\n\n"
+                    "Senior Full Stack Developer\n\n"
+                    "Skills: React Native, Expo, TypeScript, FastAPI, Node.js, Docker, PostgreSQL, AWS.\n"
+                    "Experience: Led delivery of mobile and backend products across SaaS teams.\n"
+                    "Education: Bachelor of Computer Science.\n"
+                ).encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    profile_response = client.get("/resume/profile")
+    suggestions_response = client.post("/resume/suggest-keywords")
+
+    assert response.status_code == 200
+    payload = response.json()["payload"]
+    assert payload["stored_file_path"].endswith("resume.md")
+    assert "TypeScript" in payload["technical_skills"]
+    assert "FastAPI" in payload["technical_skills"]
+    assert "Mobile Developer" in payload["suggested_professions"]
+    assert profile_response.status_code == 200
+    assert "Senior Full Stack Developer" in " ".join(profile_response.json()["job_titles"])
+    assert suggestions_response.status_code == 200
+    suggestions = suggestions_response.json()["payload"]
+    assert "Software Engineer" in suggestions["suggested_professions"]
+    assert "TypeScript" in suggestions["recommended_keywords"]
+
+
+def test_resume_analysis_refresh_and_settings_keyword_apply(isolated_env):
+    client = isolated_env["client"]
+    dashboard_services = isolated_env["dashboard_services"]
+
+    client.post(
+        "/resume/upload",
+        files={
+            "file": (
+                "profile.txt",
+                (
+                    "Backend Developer\n"
+                    "Python FastAPI Docker PostgreSQL AWS CI/CD\n"
+                    "Strong communication and leadership.\n"
+                ).encode("utf-8"),
+                "text/plain",
+            )
+        },
+    )
+
+    analyze_response = client.post("/resume/analyze")
+    assert analyze_response.status_code == 200
+    assert "Python" in analyze_response.json()["payload"]["technical_skills"]
+
+    dashboard_services.apply_suggested_keywords_to_settings(["Backend Developer", "Python Developer", "FastAPI Engineer"])
+    dashboard_services.get_settings_data.clear()
+    settings = dashboard_services.get_settings_data()
+
+    assert settings["keywords"] == ["Backend Developer", "Python Developer", "FastAPI Engineer"]
+
+
+def test_resume_text_extraction_from_txt_md_pdf_and_docx():
+    advisor = ResumeAdvisor()
+    txt_text = advisor.extract_text("resume.txt", b"Summary\nPython\nDocker\n")
+    md_text = advisor.extract_text("resume.md", b"# Skills\n\nReact Native\nExpo\n")
+
+    pdf_bytes = b"%PDF-1.4\n1 0 obj\n(Resume PDF Line 1) (Resume PDF Line 2)\nendobj\n%%EOF"
+    pdf_text = advisor.extract_text("resume.pdf", pdf_bytes)
+
+    docx_buffer = io.BytesIO()
+    with zipfile.ZipFile(docx_buffer, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                "<w:body>"
+                "<w:p><w:r><w:t>Backend Developer</w:t></w:r></w:p>"
+                "<w:p><w:r><w:t>TypeScript Node.js Docker</w:t></w:r></w:p>"
+                "</w:body></w:document>"
+            ),
+        )
+    docx_text = advisor.extract_text("resume.docx", docx_buffer.getvalue())
+
+    assert "Summary" in txt_text
+    assert "React Native" in md_text
+    assert "Resume PDF Line 1" in pdf_text
+    assert "Backend Developer" in docx_text
+    assert "TypeScript" in docx_text
+
+
+def test_resume_skill_extraction_from_skill_sections_projects_aliases_and_dedupes():
+    advisor = ResumeAdvisor()
+    profile = advisor.analyze(
+        """
+Summary
+Junior mobile and backend developer
+
+Technical Skills
+JS, TS, RN, Expo Go, Node, Postgres, CI CD, REST, Tailwind
+
+Projects
+Built a mobile app with React Native, Expo, TypeScript and FastAPI.
+Created APIs with Node.js, PostgreSQL and Docker.
+
+Languages
+English
+"""
+    )
+
+    assert "JavaScript" in profile["skill_groups"]["Programming Languages"]
+    assert "TypeScript" in profile["skill_groups"]["Programming Languages"]
+    assert "React Native" in profile["skill_groups"]["Mobile"]
+    assert "Expo" in profile["skill_groups"]["Mobile"]
+    assert "Node.js" in profile["skill_groups"]["Backend"]
+    assert "PostgreSQL" in profile["skill_groups"]["Databases"]
+    assert "CI/CD" in profile["skill_groups"]["DevOps"]
+    assert "REST APIs" in profile["skill_groups"]["Backend"]
+    assert "Tailwind CSS" in profile["skill_groups"]["Frontend"]
+    assert profile["technical_skills"].count("Expo") == 1
+
+
+def test_resume_profession_generation_is_scored_and_keyword_focused():
+    advisor = ResumeAdvisor()
+    profile = advisor.analyze(
+        """
+Professional Summary
+Graduate software engineer focused on mobile and web delivery.
+
+Experience
+Junior Developer
+Built React Native and Expo mobile apps using TypeScript.
+Worked on Node.js APIs, PostgreSQL, Docker and AWS deployments.
+"""
+    )
+
+    profession_matches = profile["profession_matches"]
+    role_titles = [item["role_title"] for item in profession_matches]
+    assert "React Native Developer" in role_titles
+    assert "Mobile App Developer" in role_titles
+    assert any(item["confidence_score"] >= 60 for item in profession_matches)
+    assert any(item["suggested_search_keyword"] == "Expo Developer" for item in profession_matches if item["role_title"] == "Expo Developer")
+    assert "Junior React Native Developer" in profile["recommended_keywords"]
+
+
+def test_resume_keyword_apply_preserves_existing_keywords(isolated_env):
+    dashboard_services = isolated_env["dashboard_services"]
+    dashboard_services.save_settings_data(
+        {
+            "keywords": ["Backend Developer"],
+            "locations": [],
+            "minimum_match_score": 75,
+            "search_interval_hours": 12,
+            "blacklist_keywords": [],
+            "blacklist_companies": [],
+            "sources": ["adzuna"],
+        }
+    )
+
+    dashboard_services.apply_suggested_keywords_to_settings(["Backend Developer", "Expo Developer", "Mobile Developer"])
+    dashboard_services.get_settings_data.clear()
+    settings = dashboard_services.get_settings_data()
+
+    assert settings["keywords"] == ["Backend Developer", "Expo Developer", "Mobile Developer"]

@@ -1,0 +1,90 @@
+{
+  "professional_summary": "Software engineering profile detected from the uploaded resume.",
+  "technical_skills": [],
+  "soft_skills": [],
+  "frameworks": [],
+  "programming_languages": [],
+  "tools_platforms": [],
+  "work_experience": [],
+  "industries": [],
+  "seniority_level": "Unknown",
+  "job_titles": [],
+  "certifications": [],
+  "education": [],
+  "suggested_professions": [],
+  "profession_matches": [],
+  "recommended_keywords": [],
+  "suggested_technologies": [],
+  "suggested_seniority_levels": [
+    "Junior",
+    "Mid-level",
+    "Senior"
+  ],
+  "skill_groups": {},
+  "detected_sections": {
+    "general": [
+      "opensource",
+      "anonymous\\",
+      "D:20260308073529+00'00'",
+      "unspecified\\",
+      "D:20260308073529+00'00'",
+      "opensource\\",
+      "unspecified\\",
+      "anonymous\\",
+      "ZWMu*KAs",
+      "9SH$hbV,FS",
+      "PjD?1<*<f",
+      "#eJfYR!<ElFS>rt.An",
+      "a!\\IN",
+      "K%ZB0OV20YRqsNaC9?D6,.La?;:E",
+      "os9#-m*:#=*q.4SUgK",
+      "bP*iD>>*'=bY':k+THOg4EXp,*fP_kRhuCNalIT'hoaA*\\\"ugt#'VUk`'toNqo'#<0%m7dNoc60",
+      "O!/+",
+      "n#cFl<b3jK<mhCq1KRr<`*h_'/",
+      "Dk$m",
+      "IXC55I,n2`e'ph`W\\Cl^N2\"q6Bsi]YL?Aj5<elt0_o'WK.Mi9@pork'Qd[c?mtEG,BVnIP8;[T/JaqP\"$@Ff2Ol\"[,*kkcC_s#!,c#tmLWAiO1ZfU]aBD9$"
+    ]
+  },
+  "resume_insights": {
+    "top_strengths": [],
+    "most_marketable_skills": [],
+    "missing_high_demand_skills": [
+      "TypeScript",
+      "React",
+      "Node.js",
+      "Docker",
+      "AWS",
+      "CI/CD",
+      "REST APIs",
+      "PostgreSQL"
+    ],
+    "ats_optimization_score": 53,
+    "suggested_career_focus": "Software Engineer",
+    "suggested_industries": [
+      "Software",
+      "SaaS"
+    ]
+  },
+  "debug": {
+    "extracted_raw_text_length": 979,
+    "detected_sections": [
+      "general"
+    ],
+    "extraction_method": "hybrid_resume_parser",
+    "parsed_skill_count": 0,
+    "ai_skill_count": 0,
+    "final_normalized_skill_count": 0
+  },
+  "assumptions": [
+    "Filename context used: pedro_silva_resume.pdf",
+    "Suggested industries were inferred from the skill mix because the resume did not state a clear domain.",
+    "Seniority level was inferred conservatively because clear years-of-experience markers were limited.",
+    "Keyword suggestions rely on partial text parsing because no structured skill section was found."
+  ],
+  "analysis_source": "fallback",
+  "original_filename": "pedro_silva_resume.pdf",
+  "stored_file_path": "/Users/gabrielparedes/Documents/gp/ai/skills/job_hunter/data/resumes/pedro_silva_resume.pdf",
+  "parsed_text_path": "/Users/gabrielparedes/Documents/gp/ai/skills/job_hunter/data/resumes/parsed_resume.txt",
+  "parsed_text": "opensource\nanonymous\\\nD:20260308073529+00'00'\nunspecified\\\nD:20260308073529+00'00'\nopensource\\\nunspecified\\\nanonymous\\\nZWMu*KAs\n9SH$hbV,FS\nPjD?1<*<f\n#eJfYR!<ElFS>rt.An\na!\\IN\nK%ZB0OV20YRqsNaC9?D6,.La?;:E\nos9#-m*:#=*q.4SUgK\nbP*iD>>*'=bY':k+THOg4EXp,*fP_kRhuCNalIT'hoaA*\\\"ugt#'VUk`'toNqo'#<0%m7dNoc60\nO!/+\nn#cFl<b3jK<mhCq1KRr<`*h_'/\nDk$m\nIXC55I,n2`e'ph`W\\Cl^N2\"q6Bsi]YL?Aj5<elt0_o'WK.Mi9@pork'Qd[c?mtEG,BVnIP8;[T/JaqP\"$@Ff2Ol\"[,*kkcC_s#!,c#tmLWAiO1ZfU]aBD9$\nIk,FDCJI0.2rK^j*+&91?4AUaFt0J:dSm7G<VT9.Y&T>\"R^Ju!IS.fqjRS;&/InE#$1n/gqi[Cm+5B:h\nBGSj[[-IW8bEH^PsT\"A8Sp4gA0aWcB/a'_$DJAo:-ps\\*rc*KSS]s.M%J=Y'@EUW;*pP/CDkFWS_K[_i5,q6@W!9H$m8dZ>\",dU__.Z=QU@eV7J#&d4mMUt6n:c.>\\U7&^XlG`J2mE+hk]9MbeD^YQkaVB_2P+ba1RL'35?T`>.;^i.hM3ED#!+\"Zr<!J;7W6e\"G<#q\nhbj=`5[5VDZg\\MR<jp1Qt.!=\"L\n9_Q'Mr?0DG-Jq\"H+ZCYhTcqT?5WCkef6Z`\\u3qu[fRRbYgTU]ce&X^9+fH#P4,A*l/dhQI4i#M&dN+JF!9o3YXs%gdUh_>f%[%X[3]dpR&6Iu\nr5rUi>3a\nR<U%<CFrNOq2?kNKG6n?.HHVKq1$\"06cb@JfEk_Kqon,GZ2_6j:\n\\F@bW4&h5$D<5Q8\"i&m?`AG[Uh5!Rr%f,\"\nopensource",
+  "uploaded_at": "2026-05-28T15:44:36.158078"
+}

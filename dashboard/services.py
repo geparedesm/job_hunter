@@ -124,6 +124,8 @@ def clear_dashboard_caches() -> None:
     get_interview_simulation_data.clear()
     get_task_monitor_data.clear()
     get_task_status_counts.clear()
+    get_resume_profile_data.clear()
+    get_resume_keyword_suggestions.clear()
 
 
 def _settings_path() -> Path:
@@ -134,7 +136,7 @@ def _settings_path() -> Path:
 def get_overview_data() -> dict[str, Any]:
     """Load overview metrics and scheduler/control metadata."""
     service = get_job_service()
-    settings = load_settings()
+    settings = load_settings(_settings_path())
     stats = service.get_statistics()
     with SessionLocal() as session:
         latest_search_log = session.scalar(
@@ -525,7 +527,7 @@ def get_task_status_counts() -> dict[str, int]:
 @st.cache_data(ttl=60)
 def get_settings_data() -> dict[str, Any]:
     """Load editable dashboard settings."""
-    settings = load_settings()
+    settings = load_settings(_settings_path())
     return {
         "keywords": settings.keywords,
         "locations": settings.locations,
@@ -549,9 +551,34 @@ def save_settings_data(payload: dict[str, Any]) -> None:
         "blacklist_companies": [item.strip() for item in payload["blacklist_companies"] if item.strip()],
         "sources": payload["sources"],
     }
-    with _settings_path().open("w", encoding="utf-8") as handle:
+    settings_path = _settings_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    with settings_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(yaml_payload, handle, sort_keys=False)
     clear_dashboard_caches()
+
+
+def apply_suggested_keywords_to_settings(keywords: list[str]) -> None:
+    """Append selected suggested keywords after an explicit UI confirmation."""
+    settings = get_settings_data()
+    merged_keywords: list[str] = []
+    seen: set[str] = set()
+    for item in [*settings["keywords"], *keywords]:
+        value = item.strip()
+        if not value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        merged_keywords.append(value)
+    payload = {
+        "keywords": merged_keywords,
+        "locations": settings["locations"],
+        "minimum_match_score": settings["minimum_match_score"],
+        "search_interval_hours": settings["search_interval_hours"],
+        "blacklist_keywords": settings["blacklist_keywords"],
+        "blacklist_companies": settings["blacklist_companies"],
+        "sources": settings["sources"],
+    }
+    save_settings_data(payload)
 
 
 def trigger_search_now() -> dict[str, int]:
@@ -583,6 +610,49 @@ def launch_search_now() -> dict[str, Any]:
     BACKGROUND_EXECUTOR.submit(worker)
     clear_dashboard_caches()
     return task
+
+
+@st.cache_data(ttl=30)
+def get_resume_profile_data() -> dict[str, Any]:
+    """Load the stored structured resume profile."""
+    return get_job_service().get_resume_profile()
+
+
+@st.cache_data(ttl=30)
+def get_resume_keyword_suggestions() -> dict[str, Any]:
+    """Load resume-derived keyword suggestions."""
+    profile = get_resume_profile_data()
+    if not profile:
+        return {}
+    return {
+        "suggested_professions": profile.get("suggested_professions", []),
+        "recommended_keywords": profile.get("recommended_keywords", []),
+        "suggested_technologies": profile.get("suggested_technologies", []),
+        "suggested_seniority_levels": profile.get("suggested_seniority_levels", []),
+        "resume_insights": profile.get("resume_insights", {}),
+        "analysis_source": profile.get("analysis_source", "fallback"),
+    }
+
+
+def upload_resume_file(filename: str, content: bytes) -> dict[str, Any]:
+    """Upload and analyze a resume file."""
+    result = get_job_service().upload_resume(filename, content)
+    clear_dashboard_caches()
+    return result
+
+
+def analyze_resume_profile() -> dict[str, Any]:
+    """Re-run analysis for the stored resume."""
+    result = get_job_service().analyze_resume()
+    clear_dashboard_caches()
+    return result
+
+
+def suggest_resume_keywords() -> dict[str, Any]:
+    """Get smart job keyword suggestions from the resume profile."""
+    result = get_job_service().suggest_resume_keywords()
+    clear_dashboard_caches()
+    return result
 
 
 def generate_documents(job_id: int) -> dict[str, str]:

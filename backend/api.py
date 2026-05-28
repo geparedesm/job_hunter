@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from backend.schemas import ActionResponse, InterviewAnswerEvaluationRequest, JobRead, SearchResponse, StatisticsRead, TaskRead
@@ -86,6 +86,42 @@ def get_base_cv() -> dict[str, object]:
     """Return the base CV preview payload."""
     payload = service.get_base_cv()
     return payload
+
+
+@app.post("/resume/upload", response_model=ActionResponse)
+async def upload_resume(file: UploadFile = File(...)) -> ActionResponse:
+    """Upload a local resume and trigger parsing plus AI suggestions."""
+    try:
+        payload = service.upload_resume(file.filename or "resume.txt", await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Resume uploaded and analyzed", payload=payload)
+
+
+@app.get("/resume/profile")
+def get_resume_profile() -> dict[str, object]:
+    """Return the stored structured resume profile."""
+    return service.get_resume_profile()
+
+
+@app.post("/resume/analyze", response_model=ActionResponse)
+def analyze_resume() -> ActionResponse:
+    """Re-run AI analysis for the stored resume."""
+    try:
+        payload = service.analyze_resume()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Resume analysis refreshed", payload=payload)
+
+
+@app.post("/resume/suggest-keywords", response_model=ActionResponse)
+def suggest_resume_keywords() -> ActionResponse:
+    """Return AI-suggested professions and search keywords from the resume."""
+    try:
+        payload = service.suggest_resume_keywords()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Resume keyword suggestions ready", payload=payload)
 
 
 @app.get("/jobs/{job_id}/cv")

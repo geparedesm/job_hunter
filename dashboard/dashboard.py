@@ -28,6 +28,8 @@ from dashboard.components import (
 )
 from dashboard.services import (
     JobFilters,
+    analyze_resume_profile,
+    apply_suggested_keywords_to_settings,
     approve_job,
     clear_dashboard_caches,
     export_base_cv_pdf,
@@ -46,6 +48,8 @@ from dashboard.services import (
     get_logs_data,
     get_notifications_data,
     get_overview_data,
+    get_resume_keyword_suggestions,
+    get_resume_profile_data,
     get_settings_data,
     get_statistics_data,
     get_task_monitor_data,
@@ -62,6 +66,8 @@ from dashboard.services import (
     save_manual_cv_content,
     save_settings_data,
     skip_job,
+    suggest_resume_keywords,
+    upload_resume_file,
 )
 from dashboard.styles import apply_global_styles
 
@@ -110,6 +116,13 @@ def _init_dashboard_state() -> None:
         "interview_question_index": 0,
         "interview_last_evaluation": None,
         "interview_current_question": None,
+        "settings_keywords_text": None,
+        "settings_locations_text": None,
+        "settings_blacklist_keywords_text": None,
+        "settings_blacklist_companies_text": None,
+        "settings_sources_selected": None,
+        "resume_keyword_suggestions_text": "",
+        "resume_selected_professions": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -862,18 +875,200 @@ elif page == "📁 Applications":
 
 elif page == "⚙️ Settings":
     settings = get_settings_data()
+    profile = get_resume_profile_data()
+    suggestions = get_resume_keyword_suggestions()
+    if st.session_state.settings_keywords_text is None:
+        st.session_state.settings_keywords_text = "\n".join(settings["keywords"])
+    if st.session_state.settings_locations_text is None:
+        st.session_state.settings_locations_text = "\n".join(settings["locations"])
+    if st.session_state.settings_blacklist_keywords_text is None:
+        st.session_state.settings_blacklist_keywords_text = "\n".join(settings["blacklist_keywords"])
+    if st.session_state.settings_blacklist_companies_text is None:
+        st.session_state.settings_blacklist_companies_text = "\n".join(settings["blacklist_companies"])
+    if st.session_state.settings_sources_selected is None:
+        st.session_state.settings_sources_selected = settings["sources"]
+    if not st.session_state.resume_keyword_suggestions_text and suggestions.get("recommended_keywords"):
+        st.session_state.resume_keyword_suggestions_text = "\n".join(suggestions["recommended_keywords"])
+    if not st.session_state.resume_selected_professions and profile.get("profession_matches"):
+        st.session_state.resume_selected_professions = [item["role_title"] for item in profile.get("profession_matches", [])[:5]]
+
     st.markdown("## Settings")
     st.caption("These settings map to config/settings.yaml. API keys are intentionally not shown here.")
+    st.markdown("### Resume / CV Management")
+    st.caption("Upload a local resume to extract skills, infer target roles, and generate smarter keyword suggestions.")
+    uploaded_resume = st.file_uploader(
+        "Upload resume",
+        type=["pdf", "docx", "txt", "md", "markdown"],
+        accept_multiple_files=False,
+        help="Supported formats: PDF, DOCX, TXT, Markdown.",
+    )
+    resume_actions = st.columns(3)
+    if resume_actions[0].button("Upload and Analyze Resume", use_container_width=True, disabled=uploaded_resume is None):
+        if uploaded_resume is None:
+            st.warning("Choose a resume file first.")
+        else:
+            uploaded_payload = run_action(
+                "Resume uploaded and analyzed",
+                lambda: upload_resume_file(uploaded_resume.name, uploaded_resume.getvalue()),
+            )
+            if isinstance(uploaded_payload, dict):
+                st.session_state.resume_keyword_suggestions_text = "\n".join(uploaded_payload.get("recommended_keywords", []))
+                clear_dashboard_caches()
+                st.rerun()
+    if resume_actions[1].button("Re-run Resume Analysis", use_container_width=True, disabled=not profile):
+        refreshed_payload = run_action("Resume analysis refreshed", analyze_resume_profile)
+        if isinstance(refreshed_payload, dict):
+            st.session_state.resume_keyword_suggestions_text = "\n".join(refreshed_payload.get("recommended_keywords", []))
+            clear_dashboard_caches()
+            st.rerun()
+    if resume_actions[2].button("Refresh Suggestions", use_container_width=True, disabled=not profile):
+        refreshed_suggestions = run_action("Resume keyword suggestions refreshed", suggest_resume_keywords)
+        if isinstance(refreshed_suggestions, dict):
+            st.session_state.resume_keyword_suggestions_text = "\n".join(refreshed_suggestions.get("recommended_keywords", []))
+            clear_dashboard_caches()
+            st.rerun()
+
+    if profile:
+        info_c1, info_c2, info_c3, info_c4 = st.columns(4)
+        info_c1.metric("Detected skills", len(profile.get("technical_skills", [])))
+        info_c2.metric("Suggested professions", len(profile.get("suggested_professions", [])))
+        info_c3.metric("ATS score", profile.get("resume_insights", {}).get("ats_optimization_score", "N/A"))
+        info_c4.metric("Seniority", profile.get("seniority_level", "Unknown"))
+        st.write(f"**Stored file:** `{profile.get('stored_file_path', 'Unknown')}`")
+        st.write(f"**Uploaded at:** {profile.get('uploaded_at', 'Unknown')}")
+        st.write(f"**Analysis source:** {profile.get('analysis_source', 'fallback')}")
+        st.markdown("#### Professional Summary")
+        st.info(profile.get("professional_summary", "No summary available."))
+
+        st.markdown("#### Detected Skills")
+        skill_groups = profile.get("skill_groups", {})
+        skill_categories = [item for item in skill_groups.items() if item[1]]
+        if skill_categories:
+            skill_columns = st.columns(3)
+            for index, (category, items) in enumerate(skill_categories):
+                with skill_columns[index % 3]:
+                    st.markdown(f"**{category}**")
+                    st.write(", ".join(items))
+        else:
+            st.info("No grouped skills were detected yet.")
+
+        detail_c1, detail_c2 = st.columns(2)
+        with detail_c1:
+            st.markdown("#### Experience Snapshot")
+            st.write(f"**Job titles:** {', '.join(profile.get('job_titles', [])) or 'None detected'}")
+            st.write(f"**Industries:** {', '.join(profile.get('industries', [])) or 'None inferred'}")
+            st.write(f"**Suggested seniority levels:** {', '.join(profile.get('suggested_seniority_levels', [])) or 'None inferred'}")
+            with st.expander("Work experience lines", expanded=False):
+                for line in profile.get("work_experience", []):
+                    st.write(f"- {line}")
+        with detail_c2:
+            st.markdown("#### Education and Certifications")
+            st.write(f"**Education:** {', '.join(profile.get('education', [])) or 'None detected'}")
+            st.write(f"**Certifications:** {', '.join(profile.get('certifications', [])) or 'None detected'}")
+            st.write(f"**Suggested technologies:** {', '.join(profile.get('suggested_technologies', [])) or 'None suggested'}")
+
+        st.markdown("#### Suggested Professions")
+        profession_matches = profile.get("profession_matches", [])
+        if profession_matches:
+            profession_rows = [
+                {
+                    "Role": item["role_title"],
+                    "Confidence": item["confidence_score"],
+                    "Matched skills": ", ".join(item.get("matched_skills", [])),
+                    "Missing skills": ", ".join(item.get("missing_skills", [])) or "None",
+                    "Search keyword": item["suggested_search_keyword"],
+                    "Why it fits": item["reason"],
+                }
+                for item in profession_matches
+            ]
+            st.dataframe(profession_rows, use_container_width=True, hide_index=True)
+            profession_options = [item["role_title"] for item in profession_matches]
+            selected_professions = st.multiselect(
+                "Select professions to insert into Keywords",
+                options=profession_options,
+                key="resume_selected_professions",
+                help="Only selected professions will be appended into your current keyword list.",
+            )
+            st.caption("Apply selected professions to keywords?")
+            if st.button("Apply Selected Professions to Keywords", use_container_width=True):
+                selected_keywords = [
+                    next(
+                        (
+                            item["suggested_search_keyword"]
+                            for item in profession_matches
+                            if item["role_title"] == selected_role
+                        ),
+                        selected_role,
+                    )
+                    for selected_role in selected_professions
+                ]
+                if not selected_keywords:
+                    st.warning("Choose at least one profession first.")
+                else:
+                    preview_keywords = [*selected_keywords, *[item for item in profile.get("recommended_keywords", []) if item not in selected_keywords][:6]]
+                    st.session_state.settings_keywords_text = "\n".join(
+                        [item for item in st.session_state.settings_keywords_text.splitlines() if item.strip()] + preview_keywords
+                    )
+                    if run_action("Selected professions applied to settings", lambda: apply_suggested_keywords_to_settings(preview_keywords)) is not None:
+                        clear_dashboard_caches()
+                        st.success("Selected professions were appended to your keyword list.")
+                        st.rerun()
+        else:
+            st.info("No profession matches were generated yet.")
+
+        st.markdown("#### Resume Insights")
+        insights = profile.get("resume_insights", {})
+        st.write(f"**Top strengths:** {', '.join(insights.get('top_strengths', [])) or 'None detected'}")
+        st.write(f"**Most marketable skills:** {', '.join(insights.get('most_marketable_skills', [])) or 'None detected'}")
+        st.write(f"**Missing high-demand skills:** {', '.join(insights.get('missing_high_demand_skills', [])) or 'None highlighted'}")
+
+        st.markdown("#### Recommended Keywords")
+        st.text_area(
+            "AI-suggested keywords",
+            key="resume_keyword_suggestions_text",
+            height=160,
+            help="Review these suggestions before copying them into your search keywords.",
+        )
+        st.caption("Apply AI suggested keywords?")
+        if st.button("Apply AI Suggested Keywords", use_container_width=True):
+            suggested_keywords = [item.strip() for item in st.session_state.resume_keyword_suggestions_text.splitlines() if item.strip()]
+            if not suggested_keywords:
+                st.warning("There are no suggested keywords to apply yet.")
+            else:
+                existing_lines = [item.strip() for item in st.session_state.settings_keywords_text.splitlines() if item.strip()]
+                merged_preview = []
+                seen = set()
+                for item in [*existing_lines, *suggested_keywords]:
+                    if item.lower() in seen:
+                        continue
+                    seen.add(item.lower())
+                    merged_preview.append(item)
+                st.session_state.settings_keywords_text = "\n".join(merged_preview)
+                if run_action("Suggested keywords applied to settings", lambda: apply_suggested_keywords_to_settings(suggested_keywords)) is not None:
+                    clear_dashboard_caches()
+                    st.success("Suggested keywords were appended to Settings. Review them below if you want to keep editing.")
+                    st.rerun()
+
+        st.markdown("#### Debug / Preview")
+        debug = profile.get("debug", {})
+        debug_c1, debug_c2, debug_c3 = st.columns(3)
+        debug_c1.metric("Raw text length", debug.get("extracted_raw_text_length", 0))
+        debug_c2.metric("Parsed skill count", debug.get("parsed_skill_count", 0))
+        debug_c3.metric("Final normalized skills", debug.get("final_normalized_skill_count", 0))
+        st.write(f"**Detected sections:** {', '.join(debug.get('detected_sections', [])) or 'None'}")
+        st.write(f"**Extraction method:** {debug.get('extraction_method', 'Unknown')}")
+        st.write(f"**AI skill count:** {debug.get('ai_skill_count', 0)}")
+
     with st.form("settings_form"):
-        keywords = st.text_area("Keywords", value="\n".join(settings["keywords"]), height=140)
-        locations = st.text_area("Locations", value="\n".join(settings["locations"]), height=100)
+        keywords = st.text_area("Keywords", key="settings_keywords_text", height=140)
+        locations = st.text_area("Locations", key="settings_locations_text", height=100)
         c1, c2 = st.columns(2)
         minimum_match_score = c1.slider("Minimum match score", min_value=0, max_value=100, value=settings["minimum_match_score"])
         search_interval_hours = c2.number_input("Search interval hours", min_value=1, max_value=168, value=settings["search_interval_hours"])
         sponsorship_required = st.toggle("Sponsorship required", value=settings["sponsorship_required"], disabled=True)
-        blacklist_keywords = st.text_area("Blacklist keywords", value="\n".join(settings["blacklist_keywords"]), height=120)
-        blacklist_companies = st.text_area("Blacklist companies", value="\n".join(settings["blacklist_companies"]), height=100)
-        sources = st.multiselect("Active sources", options=["adzuna", "jsearch", "serpapi"], default=settings["sources"])
+        blacklist_keywords = st.text_area("Blacklist keywords", key="settings_blacklist_keywords_text", height=120)
+        blacklist_companies = st.text_area("Blacklist companies", key="settings_blacklist_companies_text", height=100)
+        sources = st.multiselect("Active sources", options=["adzuna", "jsearch", "serpapi"], key="settings_sources_selected")
         submitted = st.form_submit_button("Save settings", use_container_width=True)
         if submitted:
             payload = {

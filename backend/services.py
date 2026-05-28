@@ -23,6 +23,7 @@ from ai.cover_letter import CoverLetterGenerator
 from ai.cv_adapter import CVAdapter
 from ai.interview_simulator import InterviewSimulator
 from ai.matcher import JobMatcher, MatchResult
+from ai.resume_advisor import ResumeAdvisor
 from automation.apply import ApplicationAutomation, ApplicationAutomationResult
 from backend.database import SessionLocal, init_db
 from backend.models import Application, ApplicationHistory, CVVersion, GeneratedDocument, Job, JobLog, Notification
@@ -79,6 +80,7 @@ class JobHunterService:
         self.cv_adapter = CVAdapter()
         self.cover_letter_generator = CoverLetterGenerator()
         self.interview_simulator = InterviewSimulator()
+        self.resume_advisor = ResumeAdvisor()
         self.notifier = ConsoleNotifier()
         self.automation = ApplicationAutomation()
         self.content_extractor = JobContentExtractor()
@@ -258,6 +260,132 @@ class JobHunterService:
         output_dir = PROJECT_ROOT / "generated" / "pdfs"
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
+
+    def _resume_dir(self) -> Path:
+        output_dir = PROJECT_ROOT / "data" / "resumes"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _resume_profile_path(self) -> Path:
+        return self._resume_dir() / "resume_profile.json"
+
+    def _resume_text_path(self) -> Path:
+        return self._resume_dir() / "parsed_resume.txt"
+
+    def _resume_latest_file_path(self, filename: str) -> Path:
+        safe_name = _slugify(Path(filename).stem) or "resume"
+        suffix = Path(filename).suffix.lower() or ".txt"
+        return self._resume_dir() / f"{safe_name}{suffix}"
+
+    def get_resume_profile(self) -> dict[str, Any]:
+        """Return the stored structured resume profile, if any."""
+        profile_path = self._resume_profile_path()
+        if not profile_path.exists():
+            return {}
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+
+    def upload_resume(self, filename: str, content: bytes, task_id: str | None = None) -> dict[str, Any]:
+        """Store a resume locally, parse it, and generate AI suggestions."""
+        task_id = self._ensure_task(
+            task_id,
+            task_name="Resume upload and analysis",
+            task_type="resume_upload_analysis",
+            context={"filename": filename},
+            start_step="Uploading resume...",
+        )
+        with self._session() as session:
+            try:
+                self.task_manager.update_task_progress(task_id, progress_percentage=10, current_step="Uploading resume...")
+                stored_path = self._resume_latest_file_path(filename)
+                stored_path.write_bytes(content)
+
+                self.task_manager.update_task_progress(task_id, progress_percentage=28, current_step="Extracting text...")
+                parsed_text = self.resume_advisor.extract_text(filename, content)
+                self._resume_text_path().write_text(parsed_text, encoding="utf-8")
+
+                self.task_manager.update_task_progress(task_id, progress_percentage=52, current_step="Detecting skills...")
+                profile = self.resume_advisor.analyze(parsed_text, filename=filename)
+
+                self.task_manager.update_task_progress(task_id, progress_percentage=72, current_step="Generating suggested professions...")
+                self.task_manager.update_task_progress(task_id, progress_percentage=88, current_step="Updating keyword suggestions...")
+                profile_payload = {
+                    **profile,
+                    "original_filename": filename,
+                    "stored_file_path": str(stored_path),
+                    "parsed_text_path": str(self._resume_text_path()),
+                    "parsed_text": parsed_text,
+                    "uploaded_at": datetime.utcnow().isoformat(),
+                }
+                self._resume_profile_path().write_text(json.dumps(profile_payload, indent=2), encoding="utf-8")
+
+                self.task_manager.complete_task(task_id, current_step="Completed")
+                self._log(
+                    session,
+                    "info",
+                    "resume_profile_updated",
+                    f"Resume uploaded and analyzed: {filename}",
+                    {"filename": filename, "stored_file_path": str(stored_path)},
+                    task_id=task_id,
+                )
+                self._notify(session, "resume_profile_updated", f"[SUCCESS] Resume analyzed: {filename}", task_id=task_id)
+                return profile_payload
+            except Exception as exc:
+                self.task_manager.fail_task(task_id, error_message=str(exc), current_step="Resume upload failed", traceback_summary=traceback.format_exc(limit=6))
+                self._log(session, "error", "resume_profile_failed", str(exc), {"filename": filename}, task_id=task_id)
+                raise
+
+    def analyze_resume(self, task_id: str | None = None) -> dict[str, Any]:
+        """Re-analyze the stored resume text and refresh smart suggestions."""
+        profile = self.get_resume_profile()
+        stored_file_path = profile.get("stored_file_path")
+        if not stored_file_path:
+            raise ValueError("Upload a resume first.")
+        file_path = Path(stored_file_path)
+        if not file_path.exists():
+            raise ValueError("The stored resume file no longer exists.")
+        task_id = self._ensure_task(
+            task_id,
+            task_name="Resume profile analysis",
+            task_type="resume_profile_analysis",
+            context={"filename": profile.get("original_filename", file_path.name)},
+            start_step="Uploading resume...",
+        )
+        try:
+            content = file_path.read_bytes()
+            return self.upload_resume(profile.get("original_filename", file_path.name), content, task_id=task_id)
+        except Exception as exc:
+            self.task_manager.fail_task(task_id, error_message=str(exc), current_step="Resume analysis failed", traceback_summary=traceback.format_exc(limit=6))
+            raise
+
+    def suggest_resume_keywords(self, task_id: str | None = None) -> dict[str, Any]:
+        """Return smart role and keyword suggestions derived from the stored resume."""
+        task_id = self._ensure_task(
+            task_id,
+            task_name="Resume keyword suggestions",
+            task_type="resume_keyword_suggestions",
+            start_step="Updating keyword suggestions...",
+        )
+        with self._session() as session:
+            try:
+                profile = self.get_resume_profile()
+                if not profile:
+                    raise ValueError("Upload and analyze a resume first.")
+                self.task_manager.update_task_progress(task_id, progress_percentage=55, current_step="Updating keyword suggestions...")
+                payload = {
+                    "suggested_professions": profile.get("suggested_professions", []),
+                    "recommended_keywords": profile.get("recommended_keywords", []),
+                    "suggested_technologies": profile.get("suggested_technologies", []),
+                    "suggested_seniority_levels": profile.get("suggested_seniority_levels", []),
+                    "resume_insights": profile.get("resume_insights", {}),
+                    "analysis_source": profile.get("analysis_source", "fallback"),
+                }
+                self.task_manager.complete_task(task_id, current_step="Keyword suggestions ready")
+                self._log(session, "info", "resume_keyword_suggestions", "Resume keyword suggestions generated", payload, task_id=task_id)
+                return payload
+            except Exception as exc:
+                self.task_manager.fail_task(task_id, error_message=str(exc), current_step="Keyword suggestion failed", traceback_summary=traceback.format_exc(limit=6))
+                self._log(session, "error", "resume_keyword_suggestions_failed", str(exc), task_id=task_id)
+                raise
 
     def _interview_output_dir(self, job: Job) -> Path:
         output_dir = PROJECT_ROOT / "generated" / "interviews" / _slugify(f"{job.id}_{job.company}_{job.title}")
