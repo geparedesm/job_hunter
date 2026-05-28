@@ -97,3 +97,11 @@ class TaskRead(BaseModel):
     execution_duration_seconds: float | None = None
     error_message: str = ""
     traceback_summary: str = ""
+
+
+class InterviewAnswerEvaluationRequest(BaseModel):
+    """Request payload for evaluating a single interview answer."""
+
+    job_id: int
+    question_id: str
+    answer: str

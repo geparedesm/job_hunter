@@ -31,11 +31,16 @@ from dashboard.services import (
     approve_job,
     clear_dashboard_caches,
     export_base_cv_pdf,
+    export_interview_simulation_pdf,
     export_job_cv_pdf,
+    evaluate_interview_answer,
     get_application_history_data,
     get_cv_diff_data,
     get_cv_jobs_data,
     get_cv_preview_data,
+    get_interactive_interview_question,
+    get_interview_jobs_data,
+    get_interview_simulation_data,
     get_job_detail_data,
     get_jobs_data,
     get_logs_data,
@@ -48,6 +53,7 @@ from dashboard.services import (
     is_task_running,
     launch_apply_to_job,
     launch_generate_cover_letter,
+    launch_generate_interview_simulation,
     launch_generate_tailored_cv,
     launch_recalculate_match,
     launch_search_now,
@@ -100,6 +106,10 @@ def _init_dashboard_state() -> None:
         "job_detail_tab": "Overview",
         "job_detail_cv_view": "Side-by-side Preview",
         "cv_page_selected_job": None,
+        "interview_page_selected_job": None,
+        "interview_question_index": 0,
+        "interview_last_evaluation": None,
+        "interview_current_question": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -155,7 +165,7 @@ with st.sidebar:
     st.markdown("## Navigation")
     page = st.radio(
         "Go to",
-        ["🧠 Overview", "🔍 Jobs", "📄 CV", "📊 Statistics", "📁 Applications", "⚙️ Settings", "🧾 Logs"],
+        ["🧠 Overview", "🔍 Jobs", "📄 CV", "🎤 Interview Simulator", "📊 Statistics", "📁 Applications", "⚙️ Settings", "🧾 Logs"],
         label_visibility="collapsed",
         key="dashboard_page",
     )
@@ -690,6 +700,155 @@ elif page == "📄 CV":
                     if run_action("Tailored CV task queued", lambda: launch_generate_tailored_cv(selected_cv_job_id)) is not None:
                         _refresh_task_monitor()
                         st.rerun()
+
+elif page == "🎤 Interview Simulator":
+    st.markdown("## Interview Simulator")
+    st.caption("Generate a recruiter-style interview pack manually, then practise one question at a time with feedback.")
+    interview_jobs = get_interview_jobs_data()
+    if not interview_jobs:
+        st.info("No jobs are available yet. Run a search first.")
+    else:
+        preferred_job_id = st.session_state.interview_page_selected_job if any(job["id"] == st.session_state.interview_page_selected_job for job in interview_jobs) else interview_jobs[0]["id"]
+        interview_options = {f"{item['company']} - {item['role']} ({item['id']})": item["id"] for item in interview_jobs}
+        selected_interview_label = st.selectbox(
+            "Select job for interview simulation",
+            list(interview_options.keys()),
+            index=list(interview_options.values()).index(preferred_job_id),
+            key="interview_page_selector",
+        )
+        selected_interview_job_id = interview_options[selected_interview_label]
+        st.session_state.interview_page_selected_job = selected_interview_job_id
+
+        interview_data = get_interview_simulation_data(selected_interview_job_id)
+        interview_task_running = is_task_running("interview_simulation_generation", job_id=selected_interview_job_id)
+
+        ic1, ic2, ic3, ic4 = st.columns(4)
+        ic1.metric("Company", interview_data["company"])
+        ic2.metric("Role", interview_data["title"])
+        ic3.metric("Base Match", interview_data["base_match_score"] if interview_data["base_match_score"] is not None else "N/A")
+        ic4.metric("Tailored Match", interview_data["tailored_cv_match_score"] if interview_data["tailored_cv_match_score"] is not None else "Not generated")
+
+        action_c1, action_c2 = st.columns(2)
+        if action_c1.button(
+            "Generate Interview Simulation",
+            key=f"interview_generate_{selected_interview_job_id}",
+            use_container_width=True,
+            disabled=interview_task_running,
+        ):
+            if run_action("Interview simulation task queued", lambda: launch_generate_interview_simulation(selected_interview_job_id)) is not None:
+                _refresh_task_monitor()
+                st.rerun()
+
+        interview_pdf_state_key = f"interview_pdf_payload_{selected_interview_job_id}"
+        if interview_data["markdown_content"].strip():
+            if action_c2.button(
+                "Prepare Interview PDF",
+                key=f"interview_prepare_pdf_{selected_interview_job_id}",
+                use_container_width=True,
+            ):
+                exported = run_action("Interview PDF exported", lambda: export_interview_simulation_pdf(selected_interview_job_id))
+                if isinstance(exported, dict):
+                    st.session_state[interview_pdf_state_key] = exported
+            interview_pdf_payload = st.session_state.get(interview_pdf_state_key)
+            if isinstance(interview_pdf_payload, dict):
+                action_c2.download_button(
+                    "Download Interview PDF",
+                    data=interview_pdf_payload["bytes"],
+                    file_name=Path(interview_pdf_payload["path"]).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"interview_download_pdf_{selected_interview_job_id}",
+                )
+        else:
+            action_c2.button("Download Interview PDF", disabled=True, use_container_width=True, key=f"interview_pdf_disabled_{selected_interview_job_id}")
+
+        simulation = interview_data["simulation"]
+        if not simulation:
+            st.info("No interview simulation has been generated for this job yet.")
+        else:
+            readiness = simulation["readiness_scores"]
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            rc1.metric("Interview Readiness", readiness["overall_interview_readiness_score"])
+            rc2.metric("Technical Fit", readiness["technical_fit_score"])
+            rc3.metric("Soft Skills Fit", readiness["soft_skills_fit_score"])
+            rc4.metric("Hiring Confidence", readiness["hiring_confidence_score"])
+
+            analysis = simulation["resume_analysis"]
+            context = simulation["company_context"]
+            st.markdown("### Resume Analysis")
+            st.write(f"**Industry:** {context['industry']}")
+            st.write(f"**Interview style:** {context['interview_style']}")
+            st.write(f"**Work mode:** {context['work_mode']}")
+            st.write(f"**Tech stack:** {', '.join(context['tech_stack']) or 'General software engineering'}")
+            st.write(f"**Strong matches:** {', '.join(analysis['strong_matches']) or 'None detected'}")
+            st.write(f"**Weak areas:** {', '.join(analysis['weak_areas']) or 'None detected'}")
+            st.write(f"**Missing skills:** {', '.join(analysis['missing_skills']) or 'None detected'}")
+            st.write(f"**Seniority fit:** {analysis['seniority_fit']}")
+            st.write(f"**ATS compatibility:** {analysis['ats_compatibility']}")
+
+            insights = simulation["recruiter_insights"]
+            st.markdown("### Recruiter Insights")
+            st.write(f"**What concerns me as a recruiter:** {', '.join(insights['what_concerns_me_as_a_recruiter']) or 'No major concerns'}")
+            st.write(f"**What makes you stand out:** {', '.join(insights['what_makes_you_stand_out']) or 'No standout items yet'}")
+            st.write(f"**What you should improve before the interview:** {', '.join(insights['what_you_should_improve_before_the_interview']) or 'No urgent improvements'}")
+            st.write(f"**Most likely rejection reasons:** {', '.join(insights['most_likely_rejection_reasons']) or 'No likely rejection reasons identified'}")
+            st.write(f"**Most likely hiring reasons:** {', '.join(insights['most_likely_hiring_reasons']) or 'No likely hiring reasons identified'}")
+
+            st.markdown("### Interview Pack")
+            for section in simulation["sections"]:
+                with st.expander(section["section_name"], expanded=False):
+                    for question in section["questions"]:
+                        st.write(f"**Question:** {question['question']}")
+                        st.write(f"**Strong example answer:** {question['strong_example_answer']}")
+                        st.write(f"**Why this is good:** {question['why_the_answer_is_good']}")
+                        st.write(f"**Common bad answer:** {question['common_bad_answer']}")
+                        st.write(f"**What recruiters evaluate:** {question['what_recruiters_are_evaluating']}")
+                        st.write(f"**Difficulty:** {question['difficulty_level']} · **Candidate confidence:** {question['candidate_confidence_score']}")
+                        st.markdown("---")
+
+            st.markdown("### Interactive Simulation")
+            start_c1, start_c2 = st.columns(2)
+            if start_c1.button("Load Current Question", key=f"interview_load_question_{selected_interview_job_id}", use_container_width=True):
+                question_payload = run_action(
+                    "Interactive question loaded",
+                    lambda: get_interactive_interview_question(selected_interview_job_id, st.session_state.interview_question_index),
+                )
+                if isinstance(question_payload, dict):
+                    st.session_state.interview_current_question = question_payload
+                    st.session_state.interview_last_evaluation = None
+            if start_c2.button("Next Question", key=f"interview_next_question_{selected_interview_job_id}", use_container_width=True):
+                total_questions = sum(len(section["questions"]) for section in simulation["sections"])
+                st.session_state.interview_question_index = min(st.session_state.interview_question_index + 1, max(0, total_questions - 1))
+                question_payload = run_action(
+                    "Next question loaded",
+                    lambda: get_interactive_interview_question(selected_interview_job_id, st.session_state.interview_question_index),
+                )
+                if isinstance(question_payload, dict):
+                    st.session_state.interview_current_question = question_payload
+                    st.session_state.interview_last_evaluation = None
+
+            current_question = st.session_state.get("interview_current_question")
+            if isinstance(current_question, dict) and current_question.get("job_id") == selected_interview_job_id:
+                question = current_question["question"]
+                st.write(f"**Question {current_question['question_index'] + 1} of {current_question['total_questions']}:** {question['question']}")
+                answer_key = f"interview_answer_{selected_interview_job_id}_{question['id']}"
+                answer_text = st.text_area("Your answer", key=answer_key, height=180)
+                if st.button("Evaluate Answer", key=f"interview_evaluate_{selected_interview_job_id}", use_container_width=True):
+                    evaluation = run_action(
+                        "Interview answer evaluated",
+                        lambda: evaluate_interview_answer(selected_interview_job_id, question["id"], answer_text),
+                    )
+                    if isinstance(evaluation, dict):
+                        st.session_state.interview_last_evaluation = evaluation
+                evaluation = st.session_state.get("interview_last_evaluation")
+                if isinstance(evaluation, dict) and evaluation.get("question_id") == question["id"]:
+                    st.write(f"**Score:** {evaluation['score']}")
+                    st.write(f"**Feedback:** {evaluation['feedback']}")
+                    st.write(f"**Improved answer:** {evaluation['improved_answer']}")
+                    st.write(f"**Confidence analysis:** {evaluation['confidence_analysis']}")
+                    st.write(f"**Communication analysis:** {evaluation['communication_analysis']}")
+            else:
+                st.info("Load a question to start the interactive simulation.")
 
 elif page == "📁 Applications":
     history = get_application_history_data()

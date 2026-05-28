@@ -361,6 +361,81 @@ def test_job_cv_pdf_endpoint_requires_existing_tailored_cv(isolated_env):
     assert "No tailored CV exists" in response.json()["detail"]
 
 
+def test_interview_simulation_generation_and_export(isolated_env):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    _write_base_cv(service, "# Base CV\n\nPython\nTypeScript\nNode.js\nDocker\n")
+    job = _create_job(
+        session_factory,
+        slug="interview-sim",
+        company="Luvo",
+        title="Backend Developer (TypeScript/Node.js)",
+        required_skills=["TypeScript", "Node.js", "Docker", "REST APIs"],
+        preferred_skills=["AWS"],
+        missing_skills=["AWS"],
+        raw_payload={"content_extraction": {"is_complete": True}},
+    )
+
+    response = client.post(f"/jobs/{job.id}/interview-simulation")
+    fetch_response = client.get(f"/jobs/{job.id}/interview-simulation")
+    pdf_response = client.get(f"/jobs/{job.id}/interview-simulation/pdf")
+
+    assert response.status_code == 200
+    payload = response.json()["payload"]
+    assert payload["markdown_path"].endswith(".md")
+    assert payload["json_path"].endswith(".json")
+    assert fetch_response.status_code == 200
+    simulation = fetch_response.json()["simulation"]
+    assert simulation["company"] == "Luvo"
+    assert simulation["readiness_scores"]["overall_interview_readiness_score"] >= 35
+    assert any(section["section_name"] == "Technical Questions" for section in simulation["sections"])
+    assert pdf_response.status_code == 200
+    assert pdf_response.content.startswith(b"%PDF")
+
+    with session_factory() as session:
+        documents = session.scalars(select(GeneratedDocument).where(GeneratedDocument.job_id == job.id)).all()
+        assert any(doc.doc_type == "interview_simulation_md" for doc in documents)
+        assert any(doc.doc_type == "interview_simulation_json" for doc in documents)
+
+
+def test_interactive_interview_question_and_answer_evaluation(isolated_env):
+    service = isolated_env["service"]
+    client = isolated_env["client"]
+    session_factory = isolated_env["SessionLocal"]
+
+    _write_base_cv(service, "# Base CV\n\nPython\nTypeScript\nNode.js\nDocker\n")
+    job = _create_job(
+        session_factory,
+        slug="interactive-interview",
+        company="Signal Labs",
+        title="Senior Backend Engineer",
+        required_skills=["Python", "Docker", "REST APIs"],
+        raw_payload={"content_extraction": {"is_complete": True}},
+    )
+
+    generate_response = client.post(f"/jobs/{job.id}/interview-simulation")
+    question_response = client.post(f"/jobs/{job.id}/interview-simulation/interactive?question_index=0")
+    evaluation_response = client.post(
+        "/jobs/interview-answer-evaluation",
+        json={
+            "job_id": job.id,
+            "question_id": question_response.json()["payload"]["question"]["id"],
+            "answer": "I would align my experience in Python and APIs with the role, explain impact, and give concrete examples.",
+        },
+    )
+
+    assert generate_response.status_code == 200
+    assert question_response.status_code == 200
+    assert question_response.json()["payload"]["total_questions"] >= 1
+    assert evaluation_response.status_code == 200
+    evaluation = evaluation_response.json()["payload"]
+    assert evaluation["question_id"]
+    assert evaluation["score"] >= 25
+    assert evaluation["improved_answer"]
+
+
 def test_task_endpoints_and_completed_task_tracking(isolated_env, monkeypatch):
     service = isolated_env["service"]
     client = isolated_env["client"]

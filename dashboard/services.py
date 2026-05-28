@@ -120,6 +120,8 @@ def clear_dashboard_caches() -> None:
     get_settings_data.clear()
     get_cv_jobs_data.clear()
     get_cv_preview_data.clear()
+    get_interview_jobs_data.clear()
+    get_interview_simulation_data.clear()
     get_task_monitor_data.clear()
     get_task_status_counts.clear()
 
@@ -361,6 +363,34 @@ def get_cv_preview_data(job_id: int) -> dict[str, Any]:
 def get_cv_diff_data(job_id: int) -> dict[str, Any]:
     """Load Git-style CV diff data for a selected job."""
     return get_job_service().get_job_cv_diff(job_id)
+
+
+@st.cache_data(ttl=60)
+def get_interview_jobs_data() -> list[dict[str, Any]]:
+    """Load jobs for the Interview Simulator page."""
+    with SessionLocal() as session:
+        jobs = session.scalars(select(Job).order_by(Job.updated_at.desc(), Job.found_at.desc())).all()
+
+    items: list[dict[str, Any]] = []
+    for job in jobs:
+        items.append(
+            {
+                "id": job.id,
+                "company": job.company,
+                "role": job.title,
+                "base_match_score": float(job.base_match_score) if job.base_match_score is not None else (float(job.match_score) if job.match_score is not None else None),
+                "tailored_cv_match_score": float(job.tailored_cv_match_score) if job.tailored_cv_match_score is not None else None,
+                "has_tailored_cv": bool(job.tailored_cv_path),
+                "has_interview_simulation": bool((job.raw_payload or {}).get("interview_simulation")),
+            }
+        )
+    return items
+
+
+@st.cache_data(ttl=60)
+def get_interview_simulation_data(job_id: int) -> dict[str, Any]:
+    """Load stored interview simulation data for a selected job."""
+    return get_job_service().get_interview_simulation(job_id)
 
 
 @st.cache_data(ttl=60)
@@ -739,6 +769,54 @@ def export_job_cv_pdf(job_id: int) -> dict[str, Any]:
     path = get_job_service().export_job_cv_pdf(job_id)
     clear_dashboard_caches()
     return {"path": str(path), "bytes": path.read_bytes()}
+
+
+def generate_interview_simulation(job_id: int) -> dict[str, Any]:
+    """Generate an interview simulation for a specific job."""
+    result = get_job_service().generate_interview_simulation(job_id)
+    clear_dashboard_caches()
+    return result
+
+
+def launch_generate_interview_simulation(job_id: int) -> dict[str, Any]:
+    """Queue interview simulation generation in the background."""
+    task_manager = get_task_manager()
+    existing = task_manager.find_running_task("interview_simulation_generation", context={"job_id": job_id})
+    if existing is not None:
+        raise ValueError("This task is already running.")
+    task = task_manager.create_task(
+        f"Generate interview simulation for job {job_id}",
+        "interview_simulation_generation",
+        current_step="Queued from dashboard",
+        context={"job_id": job_id},
+    )
+
+    def worker() -> None:
+        try:
+            get_job_service().generate_interview_simulation(job_id, task_id=str(task["task_id"]))
+        finally:
+            clear_dashboard_caches()
+
+    BACKGROUND_EXECUTOR.submit(worker)
+    clear_dashboard_caches()
+    return task
+
+
+def export_interview_simulation_pdf(job_id: int) -> dict[str, Any]:
+    """Export the selected interview simulation PDF for the dashboard."""
+    path = get_job_service().export_interview_simulation_pdf(job_id)
+    clear_dashboard_caches()
+    return {"path": str(path), "bytes": path.read_bytes()}
+
+
+def get_interactive_interview_question(job_id: int, question_index: int = 0) -> dict[str, Any]:
+    """Load one interview question for interactive mode."""
+    return get_job_service().start_interactive_interview(job_id, question_index=question_index)
+
+
+def evaluate_interview_answer(job_id: int, question_id: str, answer: str) -> dict[str, Any]:
+    """Evaluate one interview answer."""
+    return get_job_service().evaluate_interview_answer(job_id, question_id, answer)
 
 
 def is_task_running(task_type: str, *, job_id: int | None = None) -> bool:

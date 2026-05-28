@@ -46,6 +46,22 @@ class JobHunterSkill:
         """Document generation is manual-only in this version."""
         raise ValueError("CV and cover letter generation are manual-only. Upload or edit them yourself.")
 
+    def generate_interview_simulation(self, job_id: int) -> dict[str, object]:
+        """Generate a recruiter-style interview simulator pack."""
+        return self.service.generate_interview_simulation(job_id)
+
+    def get_interview_simulation(self, job_id: int) -> dict[str, object]:
+        """Return the latest interview simulation for a job."""
+        return self.service.get_interview_simulation(job_id)
+
+    def start_interactive_interview(self, job_id: int, question_index: int = 0) -> dict[str, object]:
+        """Load one interview question at a time."""
+        return self.service.start_interactive_interview(job_id, question_index=question_index)
+
+    def evaluate_interview_answer(self, job_id: int, question_id: str, answer: str) -> dict[str, object]:
+        """Evaluate a candidate answer for one interview question."""
+        return self.service.evaluate_interview_answer(job_id, question_id, answer)
+
     def apply_to_job(self, job_id: int) -> dict[str, object]:
         """Run gated application automation."""
         result = self.service.apply_to_job(job_id)

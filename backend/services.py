@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import difflib
+import json
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ai.cover_letter import CoverLetterGenerator
 from ai.cv_adapter import CVAdapter
+from ai.interview_simulator import InterviewSimulator
 from ai.matcher import JobMatcher, MatchResult
 from automation.apply import ApplicationAutomation, ApplicationAutomationResult
 from backend.database import SessionLocal, init_db
@@ -76,6 +78,7 @@ class JobHunterService:
         self.matcher = JobMatcher()
         self.cv_adapter = CVAdapter()
         self.cover_letter_generator = CoverLetterGenerator()
+        self.interview_simulator = InterviewSimulator()
         self.notifier = ConsoleNotifier()
         self.automation = ApplicationAutomation()
         self.content_extractor = JobContentExtractor()
@@ -256,6 +259,11 @@ class JobHunterService:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
+    def _interview_output_dir(self, job: Job) -> Path:
+        output_dir = PROJECT_ROOT / "generated" / "interviews" / _slugify(f"{job.id}_{job.company}_{job.title}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
     def _safe_cv_pdf_name(self, label: str, job: Job | None = None) -> str:
         if job is None:
             return f"{_slugify(label)}.pdf"
@@ -267,6 +275,11 @@ class JobHunterService:
             return f"base_cv_{job.id}_{company_slug}_{title_slug}.pdf"
         return f"{_slugify(label)}_{job.id}_{company_slug}_{title_slug}.pdf"
 
+    def _safe_interview_file_name(self, label: str, job: Job, extension: str) -> str:
+        company_slug = _slugify(job.company)
+        title_slug = _slugify(job.title)
+        return f"{_slugify(label)}_{job.id}_{company_slug}_{title_slug}.{extension}"
+
     def _next_document_version(self, session: Session, job_id: int, doc_type: str) -> int:
         versions = session.scalars(
             select(GeneratedDocument.version).where(
@@ -276,8 +289,16 @@ class JobHunterService:
         ).all()
         return (max(versions) if versions else 0) + 1
 
-    def _create_generated_document(self, session: Session, job: Job, doc_type: str, content: str, file_name: str) -> GeneratedDocument:
-        output_path = self._job_output_dir(job) / file_name
+    def _create_generated_document(
+        self,
+        session: Session,
+        job: Job,
+        doc_type: str,
+        content: str,
+        file_name: str,
+        output_dir: Path | None = None,
+    ) -> GeneratedDocument:
+        output_path = (output_dir or self._job_output_dir(job)) / file_name
         output_path.write_text(content, encoding="utf-8")
         document = GeneratedDocument(
             job_id=job.id,
@@ -288,6 +309,13 @@ class JobHunterService:
         )
         session.add(document)
         return document
+
+    def _latest_document(self, session: Session, job_id: int, doc_type: str) -> GeneratedDocument | None:
+        return session.scalar(
+            select(GeneratedDocument)
+            .where(GeneratedDocument.job_id == job_id, GeneratedDocument.doc_type == doc_type)
+            .order_by(GeneratedDocument.version.desc())
+        )
 
     def _job_sections(self, job: Job) -> dict[str, list[str]]:
         raw_payload = job.raw_payload or {}
@@ -426,6 +454,186 @@ class JobHunterService:
                     traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
                 )
             raise
+        finally:
+            session.close()
+
+    def get_interview_simulation(self, job_id: int) -> dict[str, Any]:
+        """Return the latest stored interview simulation payload for a job."""
+        session = self._session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            latest_markdown = self._latest_document(session, job.id, "interview_simulation_md")
+            latest_json = self._latest_document(session, job.id, "interview_simulation_json")
+            payload: dict[str, Any] = {}
+            if latest_json is not None:
+                payload = json.loads(latest_json.content)
+            elif isinstance(job.raw_payload, dict):
+                payload = (job.raw_payload or {}).get("interview_simulation", {})
+            return {
+                "job_id": job.id,
+                "company": job.company,
+                "title": job.title,
+                "base_match_score": job.base_match_score if job.base_match_score is not None else job.match_score,
+                "tailored_cv_match_score": job.tailored_cv_match_score,
+                "simulation": payload,
+                "markdown_content": latest_markdown.content if latest_markdown is not None else "",
+                "markdown_path": latest_markdown.file_path if latest_markdown is not None else "",
+                "json_path": latest_json.file_path if latest_json is not None else "",
+                "documents_generated_at": job.documents_generated_at,
+            }
+        finally:
+            session.close()
+
+    def generate_interview_simulation(self, job_id: int, session: Session | None = None, task_id: str | None = None) -> dict[str, Any]:
+        """Generate and persist interview simulation outputs on demand."""
+        owns_session = session is None
+        session = self._session(session)
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Generate interview simulation for {job.company} - {job.title}",
+                task_type="interview_simulation_generation",
+                context={"job_id": job.id},
+                start_step="Loading job and CV context",
+            )
+            base_cv = self._require_base_cv_content(session)
+            tailored_cv = ""
+            if job.tailored_cv_path and Path(job.tailored_cv_path).exists():
+                tailored_cv = Path(job.tailored_cv_path).read_text(encoding="utf-8")
+            elif self._latest_document(session, job.id, "cv") is not None:
+                tailored_cv = self._latest_document(session, job.id, "cv").content  # type: ignore[union-attr]
+
+            self.task_manager.update_task_progress(task_id, progress_percentage=25, current_step="Comparing CVs against the job...")
+            simulation = self.interview_simulator.generate(job, base_cv, tailored_cv)
+            markdown_content = self.interview_simulator.render_markdown(simulation)
+            json_content = json.dumps(simulation, indent=2, ensure_ascii=True)
+
+            self.task_manager.update_task_progress(task_id, progress_percentage=70, current_step="Saving interview outputs...")
+            output_dir = self._interview_output_dir(job)
+            markdown_doc = self._create_generated_document(
+                session,
+                job,
+                "interview_simulation_md",
+                markdown_content,
+                self._safe_interview_file_name("interview_simulation", job, "md"),
+                output_dir=output_dir,
+            )
+            json_doc = self._create_generated_document(
+                session,
+                job,
+                "interview_simulation_json",
+                json_content,
+                self._safe_interview_file_name("interview_simulation", job, "json"),
+                output_dir=output_dir,
+            )
+
+            raw_payload = dict(job.raw_payload or {})
+            raw_payload["interview_simulation"] = simulation
+            job.raw_payload = raw_payload
+            job.documents_generated_at = datetime.utcnow()
+            session.commit()
+            self._history(session, job.id, "generated_interview_simulation", f"Generated interview simulation version {markdown_doc.version}")
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return {
+                "simulation": simulation,
+                "markdown_path": markdown_doc.file_path,
+                "json_path": json_doc.file_path,
+            }
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="Interview simulation failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
+        finally:
+            if owns_session:
+                session.close()
+
+    def export_interview_simulation_pdf(self, job_id: int, task_id: str | None = None) -> Path:
+        """Export the latest interview simulation to PDF on demand."""
+        simulation_data = self.get_interview_simulation(job_id)
+        content = simulation_data["markdown_content"]
+        if not content.strip():
+            raise ValueError("No interview simulation exists for this job yet.")
+        session = self._session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            task_id = self._ensure_task(
+                task_id,
+                task_name=f"Export interview simulation PDF for {job.company} - {job.title}",
+                task_type="pdf_export",
+                context={"job_id": job.id, "interview_simulation": True},
+                start_step="Preparing interview simulation PDF",
+            )
+            self.task_manager.update_task_progress(task_id, progress_percentage=60, current_step="Rendering PDF...")
+            path = write_simple_pdf(
+                markdown_to_plain_text(content),
+                self._interview_output_dir(job) / self._safe_interview_file_name("interview_simulation", job, "pdf"),
+                title=f"Interview Simulation - {job.company} - {job.title}",
+            )
+            self.task_manager.complete_task(task_id, current_step="Completed")
+            return path
+        except Exception as exc:
+            if task_id:
+                self.task_manager.fail_task(
+                    task_id,
+                    error_message=str(exc),
+                    current_step="PDF export failed",
+                    traceback_summary="\n".join(traceback.format_exc().splitlines()[-8:]),
+                )
+            raise
+        finally:
+            session.close()
+
+    def start_interactive_interview(self, job_id: int, question_index: int = 0) -> dict[str, Any]:
+        """Return one interview question at a time for the selected job."""
+        simulation_data = self.get_interview_simulation(job_id)
+        simulation = simulation_data["simulation"]
+        if not simulation:
+            generated = self.generate_interview_simulation(job_id)
+            simulation = generated["simulation"]
+        question_payload = self.interview_simulator.interactive_question(simulation, question_index=question_index)
+        return {
+            "job_id": job_id,
+            "company": simulation_data["company"],
+            "title": simulation_data["title"],
+            **question_payload,
+        }
+
+    def evaluate_interview_answer(self, job_id: int, question_id: str, answer: str) -> dict[str, Any]:
+        """Evaluate an interview answer for a selected job."""
+        session = self._session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            simulation_data = self.get_interview_simulation(job_id)
+            simulation = simulation_data["simulation"]
+            if not simulation:
+                raise ValueError("Generate an interview simulation before evaluating answers.")
+            base_cv = self._require_base_cv_content(session)
+            tailored_cv = ""
+            if job.tailored_cv_path and Path(job.tailored_cv_path).exists():
+                tailored_cv = Path(job.tailored_cv_path).read_text(encoding="utf-8")
+            evaluation = self.interview_simulator.evaluate_answer(
+                job=job,
+                simulation=simulation,
+                question_id=question_id,
+                answer=answer,
+                base_cv=base_cv,
+                tailored_cv=tailored_cv,
+            )
+            return evaluation
         finally:
             session.close()
 

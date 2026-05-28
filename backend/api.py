@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from backend.schemas import ActionResponse, JobRead, SearchResponse, StatisticsRead, TaskRead
+from backend.schemas import ActionResponse, InterviewAnswerEvaluationRequest, JobRead, SearchResponse, StatisticsRead, TaskRead
 from backend.services import JobHunterService
 from backend.task_manager import TaskManager
 
@@ -126,6 +126,25 @@ def get_job_cv_pdf(job_id: int) -> FileResponse:
     return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
+@app.get("/jobs/{job_id}/interview-simulation")
+def get_interview_simulation(job_id: int) -> dict[str, object]:
+    """Return the latest interview simulation for a selected job."""
+    try:
+        return service.get_interview_simulation(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/jobs/{job_id}/interview-simulation/pdf")
+def get_interview_simulation_pdf(job_id: int) -> FileResponse:
+    """Export the interview simulation PDF on demand."""
+    try:
+        path = service.export_interview_simulation_pdf(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path, media_type="application/pdf", filename=path.name)
+
+
 @app.post("/jobs/{job_id}/generate", response_model=ActionResponse)
 def generate_documents(job_id: int) -> ActionResponse:
     """Document generation is manual-only in this version."""
@@ -154,6 +173,36 @@ def generate_cover_letter(job_id: int) -> ActionResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ActionResponse(success=True, message="Cover letter generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/interview-simulation", response_model=ActionResponse)
+def generate_interview_simulation(job_id: int) -> ActionResponse:
+    """Generate an interview simulation only after an explicit user action."""
+    try:
+        payload = service.generate_interview_simulation(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Interview simulation generated", payload=payload)
+
+
+@app.post("/jobs/{job_id}/interview-simulation/interactive", response_model=ActionResponse)
+def interactive_interview_question(job_id: int, question_index: int = 0) -> ActionResponse:
+    """Return a single interview question for interactive mode."""
+    try:
+        payload = service.start_interactive_interview(job_id, question_index=question_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Interactive interview question loaded", payload=payload)
+
+
+@app.post("/jobs/interview-answer-evaluation", response_model=ActionResponse)
+def evaluate_interview_answer(request: InterviewAnswerEvaluationRequest) -> ActionResponse:
+    """Evaluate a user answer against the interview simulation."""
+    try:
+        payload = service.evaluate_interview_answer(request.job_id, request.question_id, request.answer)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ActionResponse(success=True, message="Interview answer evaluated", payload=payload)
 
 
 @app.post("/jobs/{job_id}/recalculate-match", response_model=ActionResponse)
